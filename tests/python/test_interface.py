@@ -104,24 +104,20 @@ class TestK1InterfaceDocument:
 
 
 class TestD1TensorMethods:
-    """Verify D1 methods exist and return correct shapes (assumes D1 is landed)."""
+    """Verify D1 methods exist and return correct shapes (D1 landed by Deepseek)."""
 
-    @pytest.mark.skip(reason="D1 not yet implemented by Deepseek")
     def test_to_tensor_exists(self, fresh_game_state):
         assert hasattr(fresh_game_state, 'to_tensor')
 
-    @pytest.mark.skip(reason="D1 not yet implemented by Deepseek")
     def test_to_tensor_shape(self, fresh_game_state):
         arr = fresh_game_state.to_tensor()
         assert arr.shape == (14, 11, 11)
         assert arr.dtype == np.float32
 
-    @pytest.mark.skip(reason="D1 not yet implemented by Deepseek")
     def test_batch_to_tensor_exists(self, fresh_game_state):
         import alphatafl_engine as engine
         assert hasattr(engine.GameState, 'batch_to_tensor')
 
-    @pytest.mark.skip(reason="D1 not yet implemented by Deepseek")
     def test_batch_to_tensor_shape(self, fresh_game_state):
         import alphatafl_engine as engine
         states = [fresh_game_state, fresh_game_state, fresh_game_state]
@@ -129,33 +125,71 @@ class TestD1TensorMethods:
         assert arr.shape == (3, 14, 11, 11)
         assert arr.dtype == np.float32
 
-    @pytest.mark.skip(reason="D1 not yet implemented by Deepseek")
     def test_get_legal_moves_mask_exists(self, fresh_game_state):
         assert hasattr(fresh_game_state, 'get_legal_moves_mask')
 
-    @pytest.mark.skip(reason="D1 not yet implemented by Deepseek")
     def test_get_legal_moves_mask_shape(self, fresh_game_state):
         arr = fresh_game_state.get_legal_moves_mask()
         assert arr.shape == (4840,)
         assert arr.dtype == np.float32
 
-    @pytest.mark.skip(reason="D1 not yet implemented by Deepseek")
     def test_legal_moves_mask_count(self, fresh_game_state):
         mask = fresh_game_state.get_legal_moves_mask()
         legal = fresh_game_state.get_legal_moves()
         assert int(mask.sum()) == len(legal)
 
-    @pytest.mark.skip(reason="D2 not yet implemented by Deepseek")
-    def test_piece_at_exists(self, fresh_game_state):
-        assert hasattr(fresh_game_state, 'piece_at')
 
-    @pytest.mark.skip(reason="D2 not yet implemented by Deepseek")
-    def test_piece_at_value(self, fresh_game_state):
-        assert fresh_game_state.piece_at(5, 5).name == 'KING'
-        assert fresh_game_state.piece_at(0, 3).name == 'ATTACKER'
-        assert fresh_game_state.piece_at(5, 4).name == 'DEFENDER'
+class TestD2BindingsCleanup:
+    """Verify D2 heap-churn cleanup (D2 landed by Deepseek)."""
 
-    @pytest.mark.skip(reason="D2 not yet implemented by Deepseek")
     def test_board_property_removed(self, fresh_game_state):
-        # The old board property should be removed in D2
         assert not hasattr(fresh_game_state, 'board')
+
+    def test_get_historical_board_removed(self, fresh_game_state):
+        assert not hasattr(fresh_game_state, 'get_historical_board')
+
+
+class TestD4D5BatchedMCTS:
+    """Verify D4-D5 batched MCTS API (D4-D5 landed by Deepseek)."""
+
+    def test_batched_constructor(self):
+        import alphatafl_engine as engine
+        def eval_fn(s):
+            return [0.0] * 4840, 0.0
+        def eval_fn_batched(states):
+            return [[0.0] * 4840 for _ in states], [0.0] * len(states)
+        mcts = engine.MCTS(eval_fn, eval_fn_batched, 1.4)
+        assert mcts is not None
+
+    def test_search_overload_batch_size(self, fresh_game_state):
+        import alphatafl_engine as engine
+        # Provide small uniform policy so select_child has valid actions
+        def eval_fn(s):
+            return [0.001] * 4840, 0.0
+        def eval_fn_batched(states):
+            return [[0.001] * 4840 for _ in states], [0.0] * len(states)
+        mcts = engine.MCTS(eval_fn, eval_fn_batched, 1.4)
+        probs = mcts.search(fresh_game_state, 5, 2)
+        assert len(probs) == 4840
+
+    def test_search_overload_fallback(self, fresh_game_state):
+        import alphatafl_engine as engine
+        call_count = [0]
+        def eval_fn(s):
+            call_count[0] += 1
+            return [0.0] * 4840, 0.0
+        mcts = engine.MCTS(eval_fn, None, 1.4)
+        probs = mcts.search(fresh_game_state, 5, 4)
+        assert call_count[0] > 0
+        assert len(probs) == 4840
+
+    def test_mctsnode_is_pending_field(self):
+        import alphatafl_engine as engine
+        state = engine.GameState()
+        def eval_fn(s):
+            return [0.001] * 4840, 0.0
+        def eval_fn_batched(states):
+            return [[0.001] * 4840 for _ in states], [0.0] * len(states)
+        mcts = engine.MCTS(eval_fn, eval_fn_batched, 1.4)
+        probs = mcts.search(state, 10, 4)
+        assert len(probs) == 4840

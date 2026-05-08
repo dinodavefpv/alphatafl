@@ -12,7 +12,7 @@ class AlphaTaflCLI(cmd.Cmd):
     def __init__(self):
         super().__init__()
         # Initialize with settings appropriate for an i9-14900K
-        self.orchestrator = Orchestrator(num_workers=20, num_simulations=50)
+        self.orchestrator = Orchestrator(num_workers=20, num_simulations=50, batch_size=64)
         self.continuous_generation = False
         self.gen_thread = None
         self.gen_start_time = None
@@ -26,6 +26,12 @@ class AlphaTaflCLI(cmd.Cmd):
         self.trainer = None
         self.training = False
         self.train_thread = None
+        
+        self.use_batched = os.environ.get("ALPHATAFL_BATCHED", "0") == "1"
+        if self.use_batched:
+            print("[CLI] Batched inference mode enabled (ALPHATAFL_BATCHED=1)")
+        else:
+            print("[CLI] Single-leaf inference mode (ALPHATAFL_BATCHED=0)")
 
     def do_workers(self, arg):
         """Set or get the number of parallel CPU workers. Usage: workers [N]"""
@@ -52,6 +58,17 @@ class AlphaTaflCLI(cmd.Cmd):
         else:
             print(f"Current simulations: {self.orchestrator.num_simulations}")
 
+    def do_batch_size(self, arg):
+        """Set or get MCTS batch size. Usage: batch_size [N]"""
+        if arg:
+            try:
+                self.orchestrator.batch_size = int(arg)
+                print(f"Set batch size to {self.orchestrator.batch_size}")
+            except ValueError:
+                print("Invalid number.")
+        else:
+            print(f"Current batch size: {self.orchestrator.batch_size}")
+
     def do_start(self, arg):
         """Start continuous self-play generation in the background."""
         if self.continuous_generation:
@@ -64,6 +81,10 @@ class AlphaTaflCLI(cmd.Cmd):
         self.gen_thread = threading.Thread(target=self._generation_loop, daemon=True)
         self.gen_thread.start()
         print(f"Started background self-play on {self.orchestrator.num_workers} cores.")
+        if self.use_batched:
+            print("Mode: Batched inference (Inference Server on GPU)")
+        else:
+            print("Mode: Single-leaf inference (per-worker model)")
         print("Use 'status' to monitor, 'stop' to pause.")
 
     def do_stop(self, arg):
@@ -82,7 +103,7 @@ class AlphaTaflCLI(cmd.Cmd):
             print("Not currently generating.")
             return
             
-        print("Stopping generation... (waiting for active games to finish)")
+        print("Stopping generation...")
         self.continuous_generation = False
         if self.gen_thread:
             self.gen_thread.join()
@@ -111,8 +132,12 @@ class AlphaTaflCLI(cmd.Cmd):
         if not self.trainer:
             from src.training.trainer import Trainer
             self.trainer = Trainer()
-            print("Loading existing data into replay buffer...")
-            self.trainer.buffer.load_from_directory("data")
+            if self.use_batched and self.orchestrator.replay_queue:
+                print("Using queue-based replay buffer...")
+                self.trainer.start_queue_receiver(self.orchestrator.replay_queue)
+            else:
+                print("Loading existing data into replay buffer...")
+                self.trainer.buffer.load_from_directory("data")
             print(f"Buffer size: {len(self.trainer.buffer)} states")
             
         self.training = True
@@ -135,11 +160,13 @@ class AlphaTaflCLI(cmd.Cmd):
     def do_auto(self, arg):
         """Start both continuous self-play generation and the training loop simultaneously."""
         self.do_start("")
-        # Give workers a brief moment to initialize before starting the trainer
         time.sleep(1)
         self.do_train("")
         print("\n=== Auto Mode Active ===")
-        print("CPU workers are generating data, and the GPU is training.")
+        if self.use_batched:
+            print("CPU workers + GPU Inference Server + GPU Training")
+        else:
+            print("CPU workers (per-worker GPU) + GPU Training")
 
     def do_loop(self, arg):
         """Start sequential GPU self-play loop (one game at a time)."""
@@ -255,7 +282,6 @@ class AlphaTaflCLI(cmd.Cmd):
     def _generation_loop(self):
         max_games = 10000
         while self.continuous_generation and self.orchestrator.games_completed < max_games:
-            # Keep the queue populated with tasks to avoid starvation
             target_tasks = self.orchestrator.num_workers * 2
             while self.orchestrator.active_tasks < target_tasks and self.continuous_generation and self.orchestrator.games_completed < max_games:
                 self.orchestrator.dispatch_game()
@@ -283,7 +309,6 @@ class AlphaTaflCLI(cmd.Cmd):
         
         max_games = 10000
         while self.loop_generation and self.loop_games_completed < max_games:
-            # Reload weights from disk to pick up training updates
             if os.path.exists(model_path):
                 model.load_state_dict(torch.load(model_path, map_location=device))
             model.eval()
@@ -317,8 +342,8 @@ class AlphaTaflCLI(cmd.Cmd):
     def _training_loop(self):
         batch_count = 0
         while self.training:
-            # Periodically load new data generated by workers
-            if batch_count % 50 == 0:
+            # Periodically load new data if not using queue
+            if batch_count % 50 == 0 and not self.use_batched:
                 self.trainer.buffer.load_from_directory("data")
                 
             loss = self.trainer.train_step(batch_size=128)
@@ -329,7 +354,6 @@ class AlphaTaflCLI(cmd.Cmd):
                 if batch_count % 100 == 0:
                     self.trainer.save_model()
             else:
-                # Not enough data in buffer
                 time.sleep(2)
 
 if __name__ == '__main__':

@@ -5,6 +5,8 @@ import glob
 import re
 import os
 import sys
+import threading
+import time
 
 # Add the root directory to sys.path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
@@ -28,7 +30,6 @@ class Trainer:
                 self.save_model()
         else:
             print(f"Initialized new model on {self.device}")
-            # Save the initial random model so workers can load it
             self.save_model()
         
         # Scan for existing versioned checkpoints to resume numbering
@@ -41,6 +42,38 @@ class Trainer:
         
         self.optimizer = optim.Adam(self.model.parameters(), lr=0.001, weight_decay=1e-4)
         self.buffer = ReplayBuffer(capacity=200000)
+        
+        self._queue_receiver_thread = None
+        self._queue_receiver_running = False
+        
+    def start_queue_receiver(self, replay_queue):
+        """Start a background thread that pulls from replay_queue into buffer."""
+        if self._queue_receiver_running:
+            return
+        self._queue_receiver_running = True
+        self._queue_receiver_thread = threading.Thread(
+            target=self._queue_receiver_loop,
+            args=(replay_queue,),
+            daemon=True
+        )
+        self._queue_receiver_thread.start()
+        print("[Trainer] Queue receiver started")
+        
+    def stop_queue_receiver(self):
+        self._queue_receiver_running = False
+        if self._queue_receiver_thread:
+            self._queue_receiver_thread.join(timeout=2)
+            
+    def _queue_receiver_loop(self, replay_queue):
+        while self._queue_receiver_running:
+            try:
+                item = replay_queue.get(timeout=0.5)
+                if item is None:
+                    continue
+                state, policy, value = item
+                self.buffer.push(state, policy, value)
+            except Exception:
+                time.sleep(0.1)
         
     def train_step(self, batch_size=128):
         if len(self.buffer) < batch_size:
@@ -62,8 +95,6 @@ class Trainer:
         out_policies, out_values = self.model(states)
         
         # Policy Loss: Cross Entropy
-        # out_policies are logits (unnormalized), target_policies are probabilities
-        # We need log_softmax for cross entropy
         log_probs = torch.log_softmax(out_policies, dim=1)
         policy_loss = -torch.sum(target_policies * log_probs, dim=1).mean()
         
