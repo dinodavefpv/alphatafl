@@ -20,9 +20,10 @@ def test_bindings():
         state.apply_move(move)
         print(f"New turn: {state.current_turn}")
         
-    board = state.board
-    print(f"Board size: {len(board)}x{len(board[0])}")
+    tensor = state.to_tensor()
+    print(f"Tensor shape: {tensor.shape}")
     print(f"Piece at (5, 5): {state.get_piece(5, 5)}")
+    print(f"Legal moves mask sum: {state.get_legal_moves_mask().sum()}")
 
 if __name__ == "__main__":
     test_bindings()

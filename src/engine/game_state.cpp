@@ -1,4 +1,5 @@
 #include "game_state.h"
+#include "mcts.h"
 
 namespace alphatafl {
 
@@ -261,6 +262,68 @@ void GameState::check_win_condition(int row, int col) {
             winner = Player::DEFENDER; // King escaped
         }
     }
+}
+
+std::vector<float> GameState::to_tensor() const {
+    std::vector<float> tensor(TENSOR_SIZE, 0.0f);
+    // Channel layout: 0-2 (T): Attacker/Defender/King, 3-5 (T-1), 6-8 (T-2), 9-11 (T-3)
+    // Channel 12: turn, Channel 13: restricted squares
+    constexpr int CH_STRIDE = BOARD_SIZE * BOARD_SIZE;
+
+    // Fill channels 0-11 from board_history
+    for (int depth = 0; depth < 4; ++depth) {
+        const auto& hist_board = get_historical_board(depth);
+        int base_ch = depth * 3;
+        for (int r = 0; r < BOARD_SIZE; ++r) {
+            for (int c = 0; c < BOARD_SIZE; ++c) {
+                Piece p = hist_board[r][c];
+                int offset = r * BOARD_SIZE + c;
+                if (p == Piece::ATTACKER)
+                    tensor[base_ch * CH_STRIDE + offset] = 1.0f;
+                else if (p == Piece::DEFENDER)
+                    tensor[(base_ch + 1) * CH_STRIDE + offset] = 1.0f;
+                else if (p == Piece::KING)
+                    tensor[(base_ch + 2) * CH_STRIDE + offset] = 1.0f;
+            }
+        }
+    }
+
+    // Channel 12: turn indicator
+    float turn_val = (current_turn == Player::ATTACKER) ? 1.0f : 0.0f;
+    int ch12_base = 12 * CH_STRIDE;
+    for (int i = 0; i < CH_STRIDE; ++i)
+        tensor[ch12_base + i] = turn_val;
+
+    // Channel 13: restricted squares (corners + throne)
+    int ch13_base = 13 * CH_STRIDE;
+    tensor[ch13_base + 0 * BOARD_SIZE + 0] = 1.0f;
+    tensor[ch13_base + 0 * BOARD_SIZE + (BOARD_SIZE - 1)] = 1.0f;
+    tensor[ch13_base + (BOARD_SIZE - 1) * BOARD_SIZE + 0] = 1.0f;
+    tensor[ch13_base + (BOARD_SIZE - 1) * BOARD_SIZE + (BOARD_SIZE - 1)] = 1.0f;
+    tensor[ch13_base + 5 * BOARD_SIZE + 5] = 1.0f;
+
+    return tensor;
+}
+
+std::vector<float> GameState::batch_to_tensor(const std::vector<GameState>& states) {
+    size_t N = states.size();
+    std::vector<float> tensor(N * TENSOR_SIZE, 0.0f);
+    for (size_t i = 0; i < N; ++i) {
+        auto single = states[i].to_tensor();
+        std::copy(single.begin(), single.end(), tensor.begin() + i * TENSOR_SIZE);
+    }
+    return tensor;
+}
+
+std::vector<float> GameState::get_legal_moves_mask() const {
+    std::vector<float> mask(ACTION_SPACE, 0.0f);
+    auto moves = get_legal_moves();
+    for (const auto& m : moves) {
+        int idx = get_action_index(m.from_row, m.from_col, m.to_row, m.to_col, BOARD_SIZE);
+        if (idx >= 0 && idx < ACTION_SPACE)
+            mask[idx] = 1.0f;
+    }
+    return mask;
 }
 
 } // namespace alphatafl

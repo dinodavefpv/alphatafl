@@ -49,12 +49,11 @@ int MCTSNode::select_child(double c_puct) const {
     double best_score = -std::numeric_limits<double>::infinity();
     int best_action = -1;
     
-    for (size_t action = 0; action < child_priors.size(); ++action) {
+    for (int action : legal_action_indices) {
         double prob = child_priors[action];
-        if (prob == 0.0) continue;
         
         double score = 0.0;
-        auto it = children.find(static_cast<int>(action));
+        auto it = children.find(action);
         if (it != children.end()) {
             const MCTSNode* child = it->second.get();
             score = child->get_value() + c_puct * prob * (std::sqrt(static_cast<double>(visit_count)) / (1.0 + child->visit_count));
@@ -64,7 +63,7 @@ int MCTSNode::select_child(double c_puct) const {
         
         if (score > best_score) {
             best_score = score;
-            best_action = static_cast<int>(action);
+            best_action = action;
         }
     }
     return best_action;
@@ -73,6 +72,11 @@ int MCTSNode::select_child(double c_puct) const {
 void MCTSNode::expand(const std::vector<double>& action_probs) {
     is_expanded = true;
     child_priors = action_probs;
+    legal_action_indices.clear();
+    for (size_t i = 0; i < action_probs.size(); ++i) {
+        if (action_probs[i] > 0.0)
+            legal_action_indices.push_back(static_cast<int>(i));
+    }
 }
 
 MCTS::MCTS(EvalFn eval_fn, double c_puct) : eval_fn(eval_fn), c_puct(c_puct) {}

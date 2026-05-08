@@ -19,6 +19,7 @@ public:
     
     std::unordered_map<int, std::unique_ptr<MCTSNode>> children;
     std::vector<double> child_priors;
+    std::vector<int> legal_action_indices;
 
     MCTSNode(const GameState& state, MCTSNode* parent = nullptr, double prior = 0.0);
 
