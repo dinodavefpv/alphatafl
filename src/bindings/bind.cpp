@@ -77,8 +77,14 @@ PYBIND11_MODULE(alphatafl_engine, m) {
         .def_readwrite("history_hashes", &GameState::history_hashes);
 
     py::class_<MCTS>(m, "MCTS")
-        .def(py::init<MCTS::EvalFn, double>(), py::arg("eval_fn"), py::arg("c_puct") = 1.4)
-        .def("search", &MCTS::search, py::arg("initial_state"), py::arg("num_simulations"));
+        .def(py::init<MCTS::EvalFn, double>(),
+            py::arg("eval_fn"), py::arg("c_puct") = 1.4)
+        .def(py::init<MCTS::EvalFn, MCTS::EvalFnBatched, double>(),
+            py::arg("eval_fn"), py::arg("eval_fn_batched"), py::arg("c_puct") = 1.4)
+        .def("search", static_cast<std::vector<double> (MCTS::*)(const GameState&, int)>(&MCTS::search),
+            py::arg("initial_state"), py::arg("num_simulations"))
+        .def("search", static_cast<std::vector<double> (MCTS::*)(const GameState&, int, int)>(&MCTS::search),
+            py::arg("initial_state"), py::arg("num_simulations"), py::arg("batch_size"));
 }
 
 } // namespace alphatafl

@@ -38,7 +38,7 @@ Move get_move_from_index(int index, int board_size) {
 }
 
 MCTSNode::MCTSNode(const GameState& state, MCTSNode* parent, double prior)
-    : state(state), parent(parent), visit_count(0), value_sum(0.0), prior(prior), is_expanded(false) {}
+    : state(state), parent(parent), visit_count(0), value_sum(0.0), prior(prior), is_expanded(false), is_pending(false) {}
 
 double MCTSNode::get_value() const {
     if (visit_count == 0) return 0.0;
@@ -56,6 +56,7 @@ int MCTSNode::select_child(double c_puct) const {
         auto it = children.find(action);
         if (it != children.end()) {
             const MCTSNode* child = it->second.get();
+            if (child->is_pending) continue;
             score = child->get_value() + c_puct * prob * (std::sqrt(static_cast<double>(visit_count)) / (1.0 + child->visit_count));
         } else {
             score = c_puct * prob * (std::sqrt(static_cast<double>(visit_count) + 1e-8) / 1.0);
@@ -79,7 +80,11 @@ void MCTSNode::expand(const std::vector<double>& action_probs) {
     }
 }
 
-MCTS::MCTS(EvalFn eval_fn, double c_puct) : eval_fn(eval_fn), c_puct(c_puct) {}
+MCTS::MCTS(EvalFn eval_fn, double c_puct)
+    : eval_fn(eval_fn), eval_fn_batched(nullptr), c_puct(c_puct) {}
+
+MCTS::MCTS(EvalFn eval_fn, EvalFnBatched eval_fn_batched, double c_puct)
+    : eval_fn(eval_fn), eval_fn_batched(eval_fn_batched), c_puct(c_puct) {}
 
 std::vector<double> MCTS::search(const GameState& initial_state, int num_simulations) {
     MCTSNode root(initial_state);
@@ -136,6 +141,174 @@ std::vector<double> MCTS::search(const GameState& initial_state, int num_simulat
             curr_value = -curr_value; // Assuming turns alternate strictly
         }
     }
+
+    std::vector<double> probs(BOARD_SIZE * BOARD_SIZE * 40, 0.0);
+    double sum = 0.0;
+    for (const auto& kv : root.children) {
+        int action = kv.first;
+        const MCTSNode* child = kv.second.get();
+        probs[action] = child->visit_count;
+        sum += child->visit_count;
+    }
+    if (sum > 0.0) {
+        for (double& p : probs) {
+            p /= sum;
+        }
+    }
+    return probs;
+}
+
+std::vector<double> MCTS::search(const GameState& initial_state, int num_simulations, int batch_size) {
+    if (batch_size <= 0 || !eval_fn_batched) {
+        return search(initial_state, num_simulations);
+    }
+
+    MCTSNode root(initial_state);
+
+    auto eval_result = eval_fn(initial_state);
+    root.expand(eval_result.first);
+
+    int simulations_done = 0;
+    std::vector<MCTSNode*> pending_nodes;
+    std::vector<GameState> pending_states;
+    int consecutive_all_pending_stall = 0;
+
+    auto flush_batch = [&]() {
+        if (pending_nodes.empty()) return;
+        auto result = eval_fn_batched(pending_states);
+        const auto& policies = result.first;
+        const auto& values = result.second;
+
+        for (size_t i = 0; i < pending_nodes.size(); ++i) {
+            MCTSNode* node = pending_nodes[i];
+
+            // Remove virtual loss
+            node->visit_count -= 3;
+            node->value_sum += 3;
+            // Real visit
+            node->visit_count += 1;
+            node->value_sum += values[i];
+            node->is_pending = false;
+            node->expand(policies[i]);
+
+            // Backpropagate via parent chain
+            double back_val = values[i];
+            MCTSNode* p = node->parent;
+            while (p) {
+                p->visit_count += 1;
+                p->value_sum += back_val;
+                back_val = -back_val;
+                p = p->parent;
+            }
+        }
+
+        pending_nodes.clear();
+        pending_states.clear();
+        consecutive_all_pending_stall = 0;
+    };
+
+    while (simulations_done < num_simulations) {
+        MCTSNode* node = &root;
+
+        // Selection
+        while (node->is_expanded) {
+            int action = node->select_child(c_puct);
+            if (action == -1) {
+                // All children pending or no legal moves
+                bool all_pending = true;
+                bool any_child = false;
+                for (int a : node->legal_action_indices) {
+                    any_child = true;
+                    auto it = node->children.find(a);
+                    if (it != node->children.end() && !it->second->is_pending) {
+                        all_pending = false;
+                        break;
+                    }
+                }
+                if (any_child && all_pending) {
+                    consecutive_all_pending_stall++;
+                    if (consecutive_all_pending_stall > 10) {
+                        flush_batch();
+                    }
+                }
+                break;
+            }
+
+            auto it = node->children.find(action);
+            if (it != node->children.end()) {
+                MCTSNode* child = it->second.get();
+                if (child->is_pending) {
+                    consecutive_all_pending_stall++;
+                    break;
+                }
+                node = child;
+            } else {
+                Move move = get_move_from_index(action, BOARD_SIZE);
+                GameState new_state = node->state.clone();
+                new_state.apply_move(move);
+
+                auto child = std::make_unique<MCTSNode>(new_state, node, node->child_priors[action]);
+                MCTSNode* child_ptr = child.get();
+                node->children[action] = std::move(child);
+                node = child_ptr;
+                break;
+            }
+        }
+
+        // Evaluation / queuing
+        if (node == &root && root.is_expanded) {
+            // Selection returned to root without finding a leaf
+            // Means all children visited or pending. Stall guard handled above.
+            continue;
+        }
+
+        if (!node->is_expanded && node->state.winner == Player::NONE) {
+            // Non-terminal leaf — queue for batch
+            if (node->is_pending) {
+                consecutive_all_pending_stall++;
+                continue;
+            }
+            // Virtual loss
+            node->visit_count += 3;
+            node->value_sum -= 3;
+            node->is_pending = true;
+
+            pending_nodes.push_back(node);
+            pending_states.push_back(node->state.clone());
+            consecutive_all_pending_stall = 0;
+
+            if (static_cast<int>(pending_nodes.size()) >= batch_size) {
+                flush_batch();
+            }
+        } else if (!node->is_expanded) {
+            // Terminal state — backpropagate immediately
+            double leaf_value = 0.0;
+            Player winner = node->state.winner;
+            Player turn = node->state.current_turn;
+            if (winner == Player::ATTACKER) {
+                leaf_value = (turn == Player::ATTACKER) ? 1.0 : -1.0;
+            } else if (winner == Player::DEFENDER) {
+                leaf_value = (turn == Player::DEFENDER) ? 1.0 : -1.0;
+            } else {
+                leaf_value = 0.0;
+            }
+
+            double back_val = leaf_value;
+            MCTSNode* p = node;
+            while (p) {
+                p->visit_count += 1;
+                p->value_sum += back_val;
+                back_val = -back_val;
+                p = p->parent;
+            }
+            consecutive_all_pending_stall = 0;
+        }
+
+        simulations_done++;
+    }
+
+    // Flush remaining pending nodes
+    flush_batch();
 
     std::vector<double> probs(BOARD_SIZE * BOARD_SIZE * 40, 0.0);
     double sum = 0.0;

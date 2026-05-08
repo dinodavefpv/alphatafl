@@ -16,7 +16,8 @@ public:
     double value_sum;
     double prior;
     bool is_expanded;
-    
+    bool is_pending;
+
     std::unordered_map<int, std::unique_ptr<MCTSNode>> children;
     std::vector<double> child_priors;
     std::vector<int> legal_action_indices;
@@ -33,11 +34,19 @@ public:
     double c_puct;
     // Eval function: takes GameState, returns pair of (action_probs[4840], value)
     using EvalFn = std::function<std::pair<std::vector<double>, double>(const GameState&)>;
+    // Batched eval: takes vector of GameState, returns pair of (list of action_probs, values)
+    using EvalFnBatched = std::function<
+        std::pair<std::vector<std::vector<double>>, std::vector<double>>(
+            const std::vector<GameState>&
+        )>;
     EvalFn eval_fn;
+    EvalFnBatched eval_fn_batched;
 
     MCTS(EvalFn eval_fn, double c_puct = 1.4);
+    MCTS(EvalFn eval_fn, EvalFnBatched eval_fn_batched, double c_puct = 1.4);
 
     std::vector<double> search(const GameState& initial_state, int num_simulations);
+    std::vector<double> search(const GameState& initial_state, int num_simulations, int batch_size);
 };
 
 // Helper functions for action index conversions
