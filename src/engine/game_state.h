@@ -62,6 +62,15 @@ public:
 
     uint64_t compute_hash() const;
 
+    // Zero-copy tensor generation (Phase 1 D1)
+    static constexpr int TENSOR_CHANNELS = 14;
+    static constexpr int TENSOR_SIZE = BOARD_SIZE * BOARD_SIZE * TENSOR_CHANNELS;
+    static constexpr int ACTION_SPACE = BOARD_SIZE * BOARD_SIZE * 40;
+
+    std::vector<float> to_tensor() const;
+    static std::vector<float> batch_to_tensor(const std::vector<GameState>& states);
+    std::vector<float> get_legal_moves_mask() const;
+
     // Helper functions
     bool is_restricted_square(int row, int col) const;
     Piece get_piece(int row, int col) const { return board[row][col]; }

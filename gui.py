@@ -150,10 +150,9 @@ class HnefataflGUI:
                     pygame.draw.rect(win, (100, 50, 0), rect, 0)
 
     def draw_pieces(self, win):
-        board = self.game.board
         for row in range(ROWS):
             for col in range(COLS):
-                piece = board[row][col]
+                piece = self.game.get_piece(row, col)
                 if piece != engine.Piece.EMPTY:
                     x = col * SQUARE_SIZE + SQUARE_SIZE // 2
                     y = row * SQUARE_SIZE + SQUARE_SIZE // 2
@@ -196,14 +195,14 @@ class HnefataflGUI:
         win.blit(txt_surf, (10, BOARD_HEIGHT + 210)) 
         
         # Calculate captured pieces
-        board_state = self.game.board
         attacker_count = 0
         defender_count = 0
         for r in range(ROWS):
             for c in range(COLS):
-                if board_state[r][c] == engine.Piece.ATTACKER:
+                p = self.game.get_piece(r, c)
+                if p == engine.Piece.ATTACKER:
                     attacker_count += 1
-                elif board_state[r][c] == engine.Piece.DEFENDER:
+                elif p == engine.Piece.DEFENDER:
                     defender_count += 1
         
         attackers_captured = 24 - attacker_count
@@ -275,8 +274,7 @@ class HnefataflGUI:
     def handle_click(self, row, col):
         if self.mode == REPLAY or self.showing_side_selection: return
         
-        board = self.game.board
-        clicked_piece = board[row][col]
+        clicked_piece = self.game.get_piece(row, col)
         
         if clicked_piece != engine.Piece.EMPTY:
             owner = engine.Player.ATTACKER if clicked_piece == engine.Piece.ATTACKER else engine.Player.DEFENDER

@@ -1,5 +1,6 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
+#include <pybind11/numpy.h>
 #include <pybind11/operators.h>
 #include <pybind11/functional.h>
 #include "game_state.h"
@@ -41,28 +42,39 @@ PYBIND11_MODULE(alphatafl_engine, m) {
         .def("apply_move", &GameState::apply_move)
         .def("get_piece", &GameState::get_piece)
         .def("clone", &GameState::clone)
+        .def("to_tensor", [](const GameState& s) {
+            auto v = s.to_tensor();
+            float* buf = new float[v.size()];
+            std::copy(v.begin(), v.end(), buf);
+            return py::array_t<float>(
+                {14, 11, 11},
+                {11*11*4, 11*4, 4},
+                buf,
+                py::capsule(buf, [](void* p) { delete[] static_cast<float*>(p); })
+            );
+        })
+        .def_static("batch_to_tensor", [](const std::vector<GameState>& states) {
+            auto v = GameState::batch_to_tensor(states);
+            float* buf = new float[v.size()];
+            std::copy(v.begin(), v.end(), buf);
+            long n = static_cast<long>(states.size());
+            std::vector<long> shape = {n, 14, 11, 11};
+            std::vector<long> strides = {14*11*11*4L, 11*11*4L, 11*4L, 4L};
+            return py::array_t<float>(shape, strides, buf,
+                py::capsule(buf, [](void* p) { delete[] static_cast<float*>(p); }));
+        })
+        .def("get_legal_moves_mask", [](const GameState& s) {
+            auto v = s.get_legal_moves_mask();
+            float* buf = new float[v.size()];
+            std::copy(v.begin(), v.end(), buf);
+            std::vector<long> shape = {static_cast<long>(v.size())};
+            std::vector<long> strides = {4L};
+            return py::array_t<float>(shape, strides, buf,
+                py::capsule(buf, [](void* p) { delete[] static_cast<float*>(p); }));
+        })
         .def_readwrite("current_turn", &GameState::current_turn)
         .def_readwrite("winner", &GameState::winner)
-        .def_readwrite("history_hashes", &GameState::history_hashes)
-        .def_property_readonly("board", [](const GameState& s) {
-            std::vector<std::vector<Piece>> b(BOARD_SIZE, std::vector<Piece>(BOARD_SIZE));
-            for (int r = 0; r < BOARD_SIZE; ++r) {
-                for (int c = 0; c < BOARD_SIZE; ++c) {
-                    b[r][c] = s.board[r][c];
-                }
-            }
-            return b;
-        })
-        .def("get_historical_board", [](const GameState& s, int depth) {
-            std::vector<std::vector<Piece>> b(BOARD_SIZE, std::vector<Piece>(BOARD_SIZE));
-            auto hist_board = s.get_historical_board(depth);
-            for (int r = 0; r < BOARD_SIZE; ++r) {
-                for (int c = 0; c < BOARD_SIZE; ++c) {
-                    b[r][c] = hist_board[r][c];
-                }
-            }
-            return b;
-        }, py::arg("depth"));
+        .def_readwrite("history_hashes", &GameState::history_hashes);
 
     py::class_<MCTS>(m, "MCTS")
         .def(py::init<MCTS::EvalFn, double>(), py::arg("eval_fn"), py::arg("c_puct") = 1.4)
