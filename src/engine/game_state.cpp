@@ -29,9 +29,16 @@ void GameState::reset() {
     }
     current_turn = Player::ATTACKER;
     winner = Player::NONE;
-    history_hashes.clear();
-    history_hashes.push_back(compute_hash());
-    board_history.clear();
+
+    hash_counts.clear();
+    hash_counts[compute_hash()] = 1;
+
+    for (int i = 0; i < 4; ++i) {
+        for (int r = 0; r < BOARD_SIZE; ++r)
+            for (int c = 0; c < BOARD_SIZE; ++c)
+                board_history_[i][r][c] = Piece::EMPTY;
+    }
+    history_write_idx_ = 0;
 }
 
 uint64_t GameState::compute_hash() const {
@@ -74,7 +81,6 @@ std::vector<Move> GameState::get_legal_moves() const {
             Player owner = get_piece_owner(p);
             if (owner != current_turn) continue;
 
-            // Check 4 directions
             int dr[] = {-1, 1, 0, 0};
             int dc[] = {0, 0, -1, 1};
 
@@ -84,17 +90,12 @@ std::vector<Move> GameState::get_legal_moves() const {
 
                 while (curr_r >= 0 && curr_r < BOARD_SIZE && curr_c >= 0 && curr_c < BOARD_SIZE) {
                     if (board[curr_r][curr_c] != Piece::EMPTY) {
-                        break; // Blocked by another piece
+                        break;
                     }
                     
-                    // Cannot land on restricted squares unless it's the King
                     bool restricted = is_restricted_square(curr_r, curr_c);
                     if (restricted && p != Piece::KING) {
-                        // Regular pieces cannot land here, but they CAN pass over the empty throne
                         if (!(curr_r == 5 && curr_c == 5)) {
-                            // If it's a corner, they can't even pass over since it's the end of the board
-                            // but technically loop will terminate soon anyway.
-                            // We just don't add it as a valid move to land on.
                         }
                     } else {
                         moves.push_back({r, c, curr_r, curr_c});
@@ -109,63 +110,100 @@ std::vector<Move> GameState::get_legal_moves() const {
     return moves;
 }
 
+void GameState::check_threefold() {
+    uint64_t hash = compute_hash();
+    hash_counts[hash]++;
+    if (hash_counts[hash] >= 3) {
+        winner = Player::DRAW;
+    }
+}
+
 void GameState::apply_move(const Move& move) {
+    UndoInfo dummy;
+    apply_move_inplace(move, dummy);
+}
+
+void GameState::apply_move_inplace(const Move& move, UndoInfo& undo) {
     if (winner != Player::NONE) return;
 
-    // Push current board before mutating
-    board_history.push_front(board);
-    if (board_history.size() > 3)
-        board_history.pop_back();
+    // Ring buffer: save current board before mutating
+    board_history_[history_write_idx_] = board;
+    history_write_idx_ = (history_write_idx_ + 1) % 4;
 
+    // Store undo info
+    undo.from_row = move.from_row;
+    undo.from_col = move.from_col;
+    undo.to_row = move.to_row;
+    undo.to_col = move.to_col;
+    undo.moved_piece = board[move.from_row][move.from_col];
+    undo.captured_pieces.clear();
+    undo.prev_turn = current_turn;
+    undo.prev_winner = winner;
+
+    // Move the piece
     Piece p = board[move.from_row][move.from_col];
     board[move.from_row][move.from_col] = Piece::EMPTY;
     board[move.to_row][move.to_col] = p;
 
     check_win_condition(move.to_row, move.to_col);
     if (winner == Player::NONE) {
-        check_captures(move.to_row, move.to_col);
-        // After captures, check win condition again (e.g. king captured)
-        // check_captures might set winner if the king is captured
+        check_captures(move.to_row, move.to_col, &undo);
     }
 
     if (winner == Player::NONE) {
         current_turn = (current_turn == Player::ATTACKER) ? Player::DEFENDER : Player::ATTACKER;
-        // Check if next player has no legal moves (they lose)
         if (get_legal_moves().empty()) {
             winner = (current_turn == Player::ATTACKER) ? Player::DEFENDER : Player::ATTACKER;
         } else {
-            // Check threefold repetition
-            uint64_t hash = compute_hash();
-            history_hashes.push_back(hash);
-            int count = 0;
-            for (uint64_t h : history_hashes) {
-                if (h == hash) count++;
-            }
-            if (count >= 3) {
-                winner = Player::DRAW;
-            }
+            check_threefold();
         }
     }
 }
 
+void GameState::undo_move(const Move& move, const UndoInfo& undo) {
+    // Restore captured pieces
+    for (const auto& cap : undo.captured_pieces) {
+        int r, c;
+        Piece piece;
+        std::tie(r, c, piece) = cap;
+        board[r][c] = piece;
+    }
+
+    // Move the piece back
+    board[move.to_row][move.to_col] = Piece::EMPTY;
+    board[move.from_row][move.from_col] = undo.moved_piece;
+
+    // Restore turn and winner
+    current_turn = undo.prev_turn;
+    winner = undo.prev_winner;
+
+    // Undo threefold hash count
+    uint64_t hash = compute_hash();
+    if (hash_counts.count(hash)) {
+        hash_counts[hash]--;
+        if (hash_counts[hash] == 0) {
+            hash_counts.erase(hash);
+        }
+    }
+
+    // Undo ring buffer write
+    history_write_idx_ = (history_write_idx_ - 1 + 4) % 4;
+}
+
 bool GameState::is_hostile(int row, int col, Player moving_player) const {
-    // Out of bounds is not hostile
     if (row < 0 || row >= BOARD_SIZE || col < 0 || col >= BOARD_SIZE) return false;
 
-    // Corners are always hostile
     if ((row == 0 || row == BOARD_SIZE - 1) && (col == 0 || col == BOARD_SIZE - 1)) return true;
 
-    // The empty Throne is hostile
     if (row == 5 && col == 5 && board[row][col] == Piece::EMPTY) return true;
 
-    // Friendly pieces (of the moving player) help capture enemy pieces
     Piece p = board[row][col];
     if (p == Piece::EMPTY) return false;
 
     return get_piece_owner(p) == moving_player;
 }
 
-void GameState::check_captures(int row, int col) {
+void GameState::check_captures(int row, int col, UndoInfo* undo) {
     Player moving_player = current_turn;
     int dr[] = {-1, 1, 0, 0};
     int dc[] = {0, 0, -1, 1};
@@ -181,46 +219,35 @@ void GameState::check_captures(int row, int col) {
             if (adj_piece != Piece::EMPTY && adj_piece != Piece::KING) {
                 Player adj_owner = get_piece_owner(adj_piece);
                 if (adj_owner != moving_player) {
-                    // Check if there is a hostile piece or square on the other side
                     if (is_hostile(far_r, far_c, moving_player)) {
-                        // Capture!
+                        if (undo) {
+                            undo->captured_pieces.push_back(std::make_tuple(adj_r, adj_c, adj_piece));
+                        }
                         board[adj_r][adj_c] = Piece::EMPTY;
-                        
-                        // We also must clear history_hashes on a capture because the board state 
-                        // can never be repeated after pieces are permanently removed.
-                        history_hashes.clear();
                     }
                 }
             } else if (adj_piece == Piece::KING && moving_player == Player::ATTACKER) {
-                // Special King capture logic
-                // Check if king is surrounded on 4 sides (or 3 if against edge/throne)
                 int hostile_count = 0;
                 int req_hostile = 4;
                 
-                // If King is on the edge of the board, the out-of-bounds side doesn't count.
-                // We only have 3 valid adjacent squares. So we need 3 hostiles.
                 if (adj_r == 0 || adj_r == BOARD_SIZE - 1 || adj_c == 0 || adj_c == BOARD_SIZE - 1) {
                     req_hostile = 3;
                 }
-                // Note: If King is adjacent to the throne, req_hostile remains 4.
-                // The throne itself will be counted as 1 hostile square below, 
-                // meaning we correctly need exactly 3 attackers + 1 throne.
                 
                 for (int j = 0; j < 4; ++j) {
                     int k_r = adj_r + dr[j];
                     int k_c = adj_c + dc[j];
                     if (k_r < 0 || k_r >= BOARD_SIZE || k_c < 0 || k_c >= BOARD_SIZE) {
-                        continue; // Edge of board
+                        continue;
                     }
                     if (k_r == 5 && k_c == 5) {
-                        hostile_count++; // Throne is hostile
+                        hostile_count++;
                     } else if (board[k_r][k_c] == Piece::ATTACKER) {
                         hostile_count++;
                     }
                 }
                 
                 if (hostile_count >= req_hostile) {
-                    // King is captured!
                     winner = Player::ATTACKER;
                 }
             }
@@ -233,8 +260,9 @@ GameState GameState::clone() const {
     copy.board = this->board;
     copy.current_turn = this->current_turn;
     copy.winner = this->winner;
-    copy.history_hashes = this->history_hashes;
-    copy.board_history = this->board_history;
+    copy.hash_counts = this->hash_counts;
+    copy.board_history_ = this->board_history_;
+    copy.history_write_idx_ = this->history_write_idx_;
     return copy;
 }
 
@@ -242,35 +270,26 @@ std::array<std::array<Piece, BOARD_SIZE>, BOARD_SIZE> GameState::get_historical_
     if (depth == 0) {
         return board;
     }
-    int history_index = depth - 1;
-    if (history_index >= 0 && history_index < static_cast<int>(board_history.size())) {
-        return board_history[history_index];
+    if (depth < 1 || depth > 4) {
+        std::array<std::array<Piece, BOARD_SIZE>, BOARD_SIZE> empty = {};
+        return empty;
     }
-    // Return empty board if depth exceeds history
-    std::array<std::array<Piece, BOARD_SIZE>, BOARD_SIZE> empty_board = {};
-    for (int r = 0; r < BOARD_SIZE; ++r) {
-        for (int c = 0; c < BOARD_SIZE; ++c) {
-            empty_board[r][c] = Piece::EMPTY;
-        }
-    }
-    return empty_board;
+    int idx = (history_write_idx_ - depth + 4) % 4;
+    return board_history_[idx];
 }
 
 void GameState::check_win_condition(int row, int col) {
     if (board[row][col] == Piece::KING) {
         if ((row == 0 || row == BOARD_SIZE - 1) && (col == 0 || col == BOARD_SIZE - 1)) {
-            winner = Player::DEFENDER; // King escaped
+            winner = Player::DEFENDER;
         }
     }
 }
 
 std::vector<float> GameState::to_tensor() const {
     std::vector<float> tensor(TENSOR_SIZE, 0.0f);
-    // Channel layout: 0-2 (T): Attacker/Defender/King, 3-5 (T-1), 6-8 (T-2), 9-11 (T-3)
-    // Channel 12: turn, Channel 13: restricted squares
     constexpr int CH_STRIDE = BOARD_SIZE * BOARD_SIZE;
 
-    // Fill channels 0-11 from board_history
     for (int depth = 0; depth < 4; ++depth) {
         const auto& hist_board = get_historical_board(depth);
         int base_ch = depth * 3;
@@ -288,13 +307,11 @@ std::vector<float> GameState::to_tensor() const {
         }
     }
 
-    // Channel 12: turn indicator
     float turn_val = (current_turn == Player::ATTACKER) ? 1.0f : 0.0f;
     int ch12_base = 12 * CH_STRIDE;
     for (int i = 0; i < CH_STRIDE; ++i)
         tensor[ch12_base + i] = turn_val;
 
-    // Channel 13: restricted squares (corners + throne)
     int ch13_base = 13 * CH_STRIDE;
     tensor[ch13_base + 0 * BOARD_SIZE + 0] = 1.0f;
     tensor[ch13_base + 0 * BOARD_SIZE + (BOARD_SIZE - 1)] = 1.0f;

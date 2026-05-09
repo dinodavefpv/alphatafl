@@ -113,16 +113,39 @@ class Trainer:
             "total_loss": total_loss.item()
         }
         
-    def save_model(self):
+    def save_model(self, sync=False):
+        """Save model. If sync=False, saves asynchronously in background thread."""
         if not os.path.exists("models"):
             os.makedirs("models")
-        torch.save(self.model.state_dict(), self.model_path)
         
-        if not hasattr(self, 'save_count'):
-            self.save_count = 0
-        self.save_count += 1
-        if self.save_count % 50 == 0:
-            version = self.save_count // 50
-            version_path = f"models/alphatafl_v{version:05d}.pt"
-            torch.save(self.model.state_dict(), version_path)
-            print(f"Saved checkpoint to {version_path}")
+        # Clone state dict to CPU to avoid corrupting GPU tensors during concurrent training
+        state_dict = {k: v.cpu().clone() for k, v in self.model.state_dict().items()}
+        
+        if sync:
+            torch.save(state_dict, self.model_path)
+        else:
+            # Async save: training continues immediately
+            def _save():
+                try:
+                    torch.save(state_dict, self.model_path)
+                except Exception as e:
+                    print(f"[Trainer] Async save failed: {e}")
+            threading.Thread(target=_save, daemon=True).start()
+        
+    def maybe_checkpoint(self, batch_count):
+        """Check if we should save a checkpoint based on batch count."""
+        # Every 500 batches: current_best.pt
+        if batch_count % 500 == 0 and batch_count > 0:
+            self.save_model(sync=False)
+            if batch_count % 5000 == 0:
+                # Every 5000 batches: versioned checkpoint
+                version = batch_count // 5000
+                version_path = f"models/alphatafl_v{version:05d}.pt"
+                state_dict = {k: v.cpu().clone() for k, v in self.model.state_dict().items()}
+                def _save_version():
+                    try:
+                        torch.save(state_dict, version_path)
+                        print(f"[Trainer] Saved versioned checkpoint to {version_path}")
+                    except Exception as e:
+                        print(f"[Trainer] Versioned save failed: {e}")
+                threading.Thread(target=_save_version, daemon=True).start()

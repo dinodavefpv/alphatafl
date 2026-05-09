@@ -73,8 +73,7 @@ PYBIND11_MODULE(alphatafl_engine, m) {
                 py::capsule(buf, [](void* p) { delete[] static_cast<float*>(p); }));
         })
         .def_readwrite("current_turn", &GameState::current_turn)
-        .def_readwrite("winner", &GameState::winner)
-        .def_readwrite("history_hashes", &GameState::history_hashes);
+        .def_readwrite("winner", &GameState::winner);
 
     py::class_<MCTS>(m, "MCTS")
         .def(py::init<MCTS::EvalFn, double>(),

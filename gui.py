@@ -4,6 +4,7 @@ import os
 import json
 import torch
 import numpy as np
+import threading
 
 # Add the build directory to sys.path
 sys.path.append(os.path.join(os.getcwd(), 'build', 'Release'))
@@ -90,6 +91,11 @@ class HnefataflGUI:
         self.replay_moves = []
         self.replay_index = -1
         self.probabilities = [0.0]
+        
+        # K6: Async AI search
+        self.ai_search_thread = None
+        self.ai_search_result = None
+        self.ai_is_searching = False
         
         # Check if we have a trained model
         model_path = "models/current_best.pt"
@@ -191,6 +197,8 @@ class HnefataflGUI:
         turn_text = f"Turn: {self.replay_index + 2 if self.mode == REPLAY else len(self.game.history_hashes)}"
         if self.game.winner != engine.Player.NONE:
             turn_text = f"WINNER: {self.game.winner.name}"
+        elif self.ai_is_searching:
+            turn_text = "AI is thinking..."
         txt_surf = self.font.render(turn_text, True, TEXT_COLOR)
         win.blit(txt_surf, (10, BOARD_HEIGHT + 210)) 
         
@@ -397,25 +405,42 @@ def main():
                     elif gui.btn_play.is_clicked(event, mouse_pos): gui.toggle_play()
                     elif gui.btn_ff.is_clicked(event, mouse_pos): gui.fast_forward()
 
+        # K6: Async AI search
         if not gui.showing_side_selection and gui.mode == ONE_PLAYER_VS_AI and gui.game.current_turn != gui.human_side and gui.game.winner == engine.Player.NONE:
-            print("AI is thinking...")
-            from src.training.utils import get_legal_moves_mask
-            from src.model.network import get_move_from_index
-            def eval_fn(state_to_eval):
-                with torch.no_grad():
-                    tensor = state_to_tensor(state_to_eval).unsqueeze(0)
-                    policy, value = gui.model(tensor)
-                    policy = torch.softmax(policy, dim=1).squeeze(0).cpu().numpy()
-                    mask = get_legal_moves_mask(state_to_eval).cpu().numpy()
-                    policy *= mask
-                    if policy.sum() > 0: policy /= policy.sum()
-                    return policy.tolist(), value.item()
-            mcts = engine.MCTS(eval_fn, 1.4)
-            probs = np.array(mcts.search(gui.game, 100))
-            action = np.argmax(probs)
-            r1, c1, r2, c2 = get_move_from_index(action)
-            gui.game.apply_move(engine.Move(r1, c1, r2, c2))
-            gui.update_probability()
+            if not gui.ai_is_searching and gui.ai_search_result is None:
+                # Start AI search in background thread
+                gui.ai_is_searching = True
+                print("[GUI] AI is thinking...")
+                
+                def ai_search_task():
+                    from src.training.utils import get_legal_moves_mask
+                    from src.model.network import get_move_from_index
+                    def eval_fn(state_to_eval):
+                        with torch.no_grad():
+                            tensor = state_to_tensor(state_to_eval).unsqueeze(0)
+                            policy, value = gui.model(tensor)
+                            policy = torch.softmax(policy, dim=1).squeeze(0).cpu().numpy()
+                            mask = get_legal_moves_mask(state_to_eval).cpu().numpy()
+                            policy *= mask
+                            if policy.sum() > 0: policy /= policy.sum()
+                            return policy.tolist(), value.item()
+                    mcts = engine.MCTS(eval_fn, 1.4)
+                    probs = np.array(mcts.search(gui.game, 100))
+                    action = np.argmax(probs)
+                    r1, c1, r2, c2 = get_move_from_index(action)
+                    gui.ai_search_result = (r1, c1, r2, c2)
+                    gui.ai_is_searching = False
+                
+                gui.ai_search_thread = threading.Thread(target=ai_search_task, daemon=True)
+                gui.ai_search_thread.start()
+            
+            elif gui.ai_search_result is not None:
+                # Apply the completed move
+                r1, c1, r2, c2 = gui.ai_search_result
+                gui.game.apply_move(engine.Move(r1, c1, r2, c2))
+                gui.update_probability()
+                gui.ai_search_result = None
+                gui.ai_search_thread = None
 
         gui.update_replay(pygame.time.get_ticks())
         gui.draw_board(win); gui.draw_highlight(win); gui.draw_pieces(win); gui.draw_bottom_bar(win, mouse_pos)

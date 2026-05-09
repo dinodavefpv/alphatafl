@@ -351,8 +351,8 @@ class AlphaTaflCLI(cmd.Cmd):
                 batch_count += 1
                 if batch_count % 1000 == 0:
                     print(f"\n[Train] Batch {batch_count} | Policy Loss: {loss['policy_loss']:.4f} | Value Loss: {loss['value_loss']:.4f}")
-                if batch_count % 100 == 0:
-                    self.trainer.save_model()
+                # K5: Async checkpointing
+                self.trainer.maybe_checkpoint(batch_count)
             else:
                 time.sleep(2)
 
