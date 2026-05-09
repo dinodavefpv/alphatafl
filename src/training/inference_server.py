@@ -26,7 +26,9 @@ def inference_server_main(inference_queue, response_queues, model_path, stop_eve
     model = AlphaTaflNet().to(device).eval()
     torch.set_grad_enabled(False)
     
+    last_mtime = 0
     if os.path.exists(model_path):
+        last_mtime = os.path.getmtime(model_path)
         try:
             model.load_state_dict(torch.load(model_path, map_location=device))
             print(f"[InferenceServer] Loaded model from {model_path} on {device}")
@@ -35,6 +37,7 @@ def inference_server_main(inference_queue, response_queues, model_path, stop_eve
     else:
         print(f"[InferenceServer] No model found at {model_path}, using random weights")
     
+    batch_count = 0
     while not stop_event.is_set():
         try:
             msg = inference_queue.get(timeout=0.1)
@@ -77,6 +80,19 @@ def inference_server_main(inference_queue, response_queues, model_path, stop_eve
             total_states = sum(n for _, _, n in batch_info)
             policies = np.zeros((total_states, 4840), dtype=np.float32)
             values = np.zeros(total_states, dtype=np.float32)
+        
+        batch_count += 1
+        
+        # K5: Hot-reload model if file changed
+        if batch_count % 10 == 0 and os.path.exists(model_path):
+            current_mtime = os.path.getmtime(model_path)
+            if current_mtime != last_mtime:
+                try:
+                    model.load_state_dict(torch.load(model_path, map_location=device))
+                    last_mtime = current_mtime
+                    print(f"[InferenceServer] Hot-reloaded model from {model_path}")
+                except Exception as e:
+                    print(f"[InferenceServer] Hot-reload failed: {e}")
         
         # Route results back: each response contains the exact number of states
         # that were in the original request

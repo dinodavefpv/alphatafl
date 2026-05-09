@@ -3,42 +3,8 @@
 
 namespace alphatafl {
 
-int get_action_index(int from_row, int from_col, int to_row, int to_col, int board_size) {
-    int action_type = 0;
-    int action_val = 0;
-    if (to_row == from_row) { // Horizontal
-        int dist = to_col - from_col;
-        if (dist > 0) { action_type = 0; action_val = dist - 1; }
-        else { action_type = 1; action_val = -dist - 1; }
-    } else { // Vertical
-        int dist = to_row - from_row;
-        if (dist > 0) { action_type = 2; action_val = dist - 1; }
-        else { action_type = 3; action_val = -dist - 1; }
-    }
-    return (from_row * board_size + from_col) * 40 + (action_type * 10 + action_val);
-}
-
-Move get_move_from_index(int index, int board_size) {
-    int piece_idx = index / 40;
-    int action_idx = index % 40;
-    
-    int from_r = piece_idx / board_size;
-    int from_c = piece_idx % board_size;
-    
-    int action_type = action_idx / 10;
-    int dist = (action_idx % 10) + 1;
-    
-    int to_r, to_c;
-    if (action_type == 0) { to_r = from_r; to_c = from_c + dist; }
-    else if (action_type == 1) { to_r = from_r; to_c = from_c - dist; }
-    else if (action_type == 2) { to_r = from_r + dist; to_c = from_c; }
-    else { to_r = from_r - dist; to_c = from_c; }
-    
-    return Move(from_r, from_c, to_r, to_c);
-}
-
-MCTSNode::MCTSNode(const GameState& state, MCTSNode* parent, double prior)
-    : state(state), parent(parent), visit_count(0), value_sum(0.0), prior(prior), is_expanded(false), is_pending(false) {}
+MCTSNode::MCTSNode(MCTSNode* parent, double prior)
+    : parent(parent), visit_count(0), value_sum(0.0), prior(prior), is_expanded(false), is_pending(false) {}
 
 double MCTSNode::get_value() const {
     if (visit_count == 0) return 0.0;
@@ -87,30 +53,37 @@ MCTS::MCTS(EvalFn eval_fn, EvalFnBatched eval_fn_batched, double c_puct)
     : eval_fn(eval_fn), eval_fn_batched(eval_fn_batched), c_puct(c_puct) {}
 
 std::vector<double> MCTS::search(const GameState& initial_state, int num_simulations) {
-    MCTSNode root(initial_state);
-    
-    auto eval_result = eval_fn(initial_state);
+    MCTSNode root;
+    GameState traversal = initial_state.clone();
+
+    auto eval_result = eval_fn(traversal);
     root.expand(eval_result.first);
 
     for (int i = 0; i < num_simulations; ++i) {
         MCTSNode* node = &root;
         std::vector<MCTSNode*> search_path;
+        std::vector<UndoInfo> undo_stack;
         search_path.push_back(node);
 
         while (node->is_expanded) {
             int action = node->select_child(c_puct);
-            if (action == -1) break; // Should not happen if there are legal moves
+            if (action == -1) break;
 
             auto it = node->children.find(action);
             if (it != node->children.end()) {
+                Move move = get_move_from_index(action, BOARD_SIZE);
+                UndoInfo undo;
+                traversal.apply_move_inplace(move, undo);
+                undo_stack.push_back(undo);
                 node = it->second.get();
                 search_path.push_back(node);
             } else {
                 Move move = get_move_from_index(action, BOARD_SIZE);
-                GameState new_state = node->state.clone();
-                new_state.apply_move(move);
-                
-                auto child = std::make_unique<MCTSNode>(new_state, node, node->child_priors[action]);
+                UndoInfo undo;
+                traversal.apply_move_inplace(move, undo);
+                undo_stack.push_back(undo);
+
+                auto child = std::make_unique<MCTSNode>(node, node->child_priors[action]);
                 MCTSNode* child_ptr = child.get();
                 node->children[action] = std::move(child);
                 node = child_ptr;
@@ -120,17 +93,17 @@ std::vector<double> MCTS::search(const GameState& initial_state, int num_simulat
         }
 
         double leaf_value = 0.0;
-        if (node->state.winner == Player::NONE) {
-            auto child_eval = eval_fn(node->state);
+        if (traversal.winner == Player::NONE) {
+            auto child_eval = eval_fn(traversal);
             leaf_value = child_eval.second;
             node->expand(child_eval.first);
         } else {
-            if (node->state.winner == Player::DRAW) {
+            if (traversal.winner == Player::ATTACKER) {
+                leaf_value = (traversal.current_turn == Player::ATTACKER) ? 1.0 : -1.0;
+            } else if (traversal.winner == Player::DEFENDER) {
+                leaf_value = (traversal.current_turn == Player::DEFENDER) ? 1.0 : -1.0;
+            } else {
                 leaf_value = 0.0;
-            } else if (node->state.winner == Player::ATTACKER) {
-                leaf_value = (node->state.current_turn == Player::ATTACKER) ? 1.0 : -1.0;
-            } else if (node->state.winner == Player::DEFENDER) {
-                leaf_value = (node->state.current_turn == Player::DEFENDER) ? 1.0 : -1.0;
             }
         }
 
@@ -138,7 +111,13 @@ std::vector<double> MCTS::search(const GameState& initial_state, int num_simulat
         for (auto it = search_path.rbegin(); it != search_path.rend(); ++it) {
             (*it)->value_sum += curr_value;
             (*it)->visit_count += 1;
-            curr_value = -curr_value; // Assuming turns alternate strictly
+            curr_value = -curr_value;
+        }
+
+        // Undo all moves in reverse order
+        for (auto it = undo_stack.rbegin(); it != undo_stack.rend(); ++it) {
+            Move m{it->from_row, it->from_col, it->to_row, it->to_col};
+            traversal.undo_move(m, *it);
         }
     }
 
@@ -163,9 +142,10 @@ std::vector<double> MCTS::search(const GameState& initial_state, int num_simulat
         return search(initial_state, num_simulations);
     }
 
-    MCTSNode root(initial_state);
+    MCTSNode root;
+    GameState traversal = initial_state.clone();
 
-    auto eval_result = eval_fn(initial_state);
+    auto eval_result = eval_fn(traversal);
     root.expand(eval_result.first);
 
     int simulations_done = 0;
@@ -182,16 +162,13 @@ std::vector<double> MCTS::search(const GameState& initial_state, int num_simulat
         for (size_t i = 0; i < pending_nodes.size(); ++i) {
             MCTSNode* node = pending_nodes[i];
 
-            // Remove virtual loss
             node->visit_count -= 3;
             node->value_sum += 3;
-            // Real visit
             node->visit_count += 1;
             node->value_sum += values[i];
             node->is_pending = false;
             node->expand(policies[i]);
 
-            // Backpropagate via parent chain
             double back_val = values[i];
             MCTSNode* p = node->parent;
             while (p) {
@@ -209,12 +186,11 @@ std::vector<double> MCTS::search(const GameState& initial_state, int num_simulat
 
     while (simulations_done < num_simulations) {
         MCTSNode* node = &root;
+        std::vector<UndoInfo> undo_stack;
 
-        // Selection
         while (node->is_expanded) {
             int action = node->select_child(c_puct);
             if (action == -1) {
-                // All children pending or no legal moves
                 bool all_pending = true;
                 bool any_child = false;
                 for (int a : node->legal_action_indices) {
@@ -241,13 +217,18 @@ std::vector<double> MCTS::search(const GameState& initial_state, int num_simulat
                     consecutive_all_pending_stall++;
                     break;
                 }
+                Move move = get_move_from_index(action, BOARD_SIZE);
+                UndoInfo undo;
+                traversal.apply_move_inplace(move, undo);
+                undo_stack.push_back(undo);
                 node = child;
             } else {
                 Move move = get_move_from_index(action, BOARD_SIZE);
-                GameState new_state = node->state.clone();
-                new_state.apply_move(move);
+                UndoInfo undo;
+                traversal.apply_move_inplace(move, undo);
+                undo_stack.push_back(undo);
 
-                auto child = std::make_unique<MCTSNode>(new_state, node, node->child_priors[action]);
+                auto child = std::make_unique<MCTSNode>(node, node->child_priors[action]);
                 MCTSNode* child_ptr = child.get();
                 node->children[action] = std::move(child);
                 node = child_ptr;
@@ -255,42 +236,55 @@ std::vector<double> MCTS::search(const GameState& initial_state, int num_simulat
             }
         }
 
-        // Evaluation / queuing
         if (node == &root && root.is_expanded) {
-            // Selection returned to root without finding a leaf
-            // Means all children visited or pending. Stall guard handled above.
+            // Undo any moves made before breaking
+            for (auto it = undo_stack.rbegin(); it != undo_stack.rend(); ++it) {
+                Move m{it->from_row, it->from_col, it->to_row, it->to_col};
+                traversal.undo_move(m, *it);
+            }
             continue;
         }
 
-        if (!node->is_expanded && node->state.winner == Player::NONE) {
-            // Non-terminal leaf — queue for batch
+        if (!node->is_expanded && traversal.winner == Player::NONE) {
             if (node->is_pending) {
                 consecutive_all_pending_stall++;
+                // Undo before continuing
+                for (auto it = undo_stack.rbegin(); it != undo_stack.rend(); ++it) {
+                    Move m{it->from_row, it->from_col, it->to_row, it->to_col};
+                    traversal.undo_move(m, *it);
+                }
                 continue;
             }
-            // Virtual loss
             node->visit_count += 3;
             node->value_sum -= 3;
             node->is_pending = true;
 
             pending_nodes.push_back(node);
-            pending_states.push_back(node->state.clone());
+            pending_states.push_back(traversal.clone());
             consecutive_all_pending_stall = 0;
 
             if (static_cast<int>(pending_nodes.size()) >= batch_size) {
+                // Undo before flush (traversal is at leaf, flush uses cloned states)
+                for (auto it = undo_stack.rbegin(); it != undo_stack.rend(); ++it) {
+                    Move m{it->from_row, it->from_col, it->to_row, it->to_col};
+                    traversal.undo_move(m, *it);
+                }
+                undo_stack.clear();
                 flush_batch();
+            } else {
+                for (auto it = undo_stack.rbegin(); it != undo_stack.rend(); ++it) {
+                    Move m{it->from_row, it->from_col, it->to_row, it->to_col};
+                    traversal.undo_move(m, *it);
+                }
             }
         } else if (!node->is_expanded) {
-            // Terminal state — backpropagate immediately
             double leaf_value = 0.0;
-            Player winner = node->state.winner;
-            Player turn = node->state.current_turn;
+            Player winner = traversal.winner;
+            Player turn = traversal.current_turn;
             if (winner == Player::ATTACKER) {
                 leaf_value = (turn == Player::ATTACKER) ? 1.0 : -1.0;
             } else if (winner == Player::DEFENDER) {
                 leaf_value = (turn == Player::DEFENDER) ? 1.0 : -1.0;
-            } else {
-                leaf_value = 0.0;
             }
 
             double back_val = leaf_value;
@@ -302,12 +296,17 @@ std::vector<double> MCTS::search(const GameState& initial_state, int num_simulat
                 p = p->parent;
             }
             consecutive_all_pending_stall = 0;
+
+            // Undo all moves
+            for (auto it = undo_stack.rbegin(); it != undo_stack.rend(); ++it) {
+                Move m{it->from_row, it->from_col, it->to_row, it->to_col};
+                traversal.undo_move(m, *it);
+            }
         }
 
         simulations_done++;
     }
 
-    // Flush remaining pending nodes
     flush_batch();
 
     std::vector<double> probs(BOARD_SIZE * BOARD_SIZE * 40, 0.0);
