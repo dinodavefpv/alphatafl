@@ -74,7 +74,7 @@ class Orchestrator:
         self.states_generated = 0
         self.active_tasks = 0
         
-        self.use_batched = os.environ.get("ALPHATAFL_BATCHED", "0") == "1"
+        self.use_batched = os.environ.get("ALPHATAFL_BATCHED", "1") == "1"
         
         # Queues (created in parent, passed to children)
         self.inference_queue = None

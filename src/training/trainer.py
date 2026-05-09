@@ -13,6 +13,18 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from src.model.network import AlphaTaflNet
 from src.training.replay_buffer import ReplayBuffer
 
+class ReplayDataset(torch.utils.data.Dataset):
+    """PyTorch Dataset wrapper for the in-memory replay buffer."""
+    def __init__(self, buffer):
+        self.buffer = buffer
+    
+    def __len__(self):
+        return len(self.buffer)
+    
+    def __getitem__(self, idx):
+        state, policy, value = self.buffer.buffer[idx]
+        return state, policy, value
+
 class Trainer:
     def __init__(self, model_path="models/current_best.pt", device=None):
         self.device = device if device else ("cuda" if torch.cuda.is_available() else "cpu")
@@ -42,6 +54,22 @@ class Trainer:
         
         self.optimizer = optim.Adam(self.model.parameters(), lr=0.001, weight_decay=1e-4)
         self.buffer = ReplayBuffer(capacity=200000)
+        
+        # K9: DataLoader for efficient batching (created lazily when buffer has data)
+        self.dataloader = None
+        self.dataloader_iter = None
+    
+    def _ensure_dataloader(self):
+        """Create or recreate DataLoader if buffer has data."""
+        if self.dataloader is None and len(self.buffer) > 0:
+            dataset = ReplayDataset(self.buffer)
+            self.dataloader = torch.utils.data.DataLoader(
+                dataset,
+                batch_size=128,
+                shuffle=True,
+                num_workers=0,
+                pin_memory=(self.device == "cuda")
+            )
         
         self._queue_receiver_thread = None
         self._queue_receiver_running = False
@@ -78,9 +106,28 @@ class Trainer:
     def train_step(self, batch_size=128):
         if len(self.buffer) < batch_size:
             return None
-            
+        
+        # K9: Use DataLoader iterator for batched sampling
+        self._ensure_dataloader()
+        if self.dataloader is None:
+            return None
+        
+        if self.dataloader_iter is None:
+            self.dataloader_iter = iter(self.dataloader)
+        
+        try:
+            states, target_policies, target_values = next(self.dataloader_iter)
+        except StopIteration:
+            # Re-create iterator when exhausted
+            self.dataloader_iter = iter(self.dataloader)
+            states, target_policies, target_values = next(self.dataloader_iter)
+        
+        # DataLoader may return a different batch size on the last batch
+        if states.shape[0] < batch_size:
+            # Skip partial batches for consistent batch sizes
+            return self.train_step(batch_size)
+        
         self.model.train()
-        states, target_policies, target_values = self.buffer.sample(batch_size, self.device)
         
         if states.shape[1] != 14:
             raise ValueError(f"Legacy data detected: tensor has {states.shape[1]} channels instead of 14. "

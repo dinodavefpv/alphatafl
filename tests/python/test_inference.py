@@ -87,13 +87,13 @@ class TestK2InferenceServer:
 
     def test_inference_server_timeout(self, inference_server_setup):
         inference_queue, response_queues, stop_event, proc = inference_server_setup
-        
+
         state = engine.GameState()
         tensor = torch.from_numpy(state.to_tensor()).unsqueeze(0)
-        
-        # Send only one state, server should flush after 50ms timeout
+
+        # Send only one state, server should flush after short adaptive timeout (default 5ms)
         inference_queue.put((0, 99, tensor))
-        
+
         req_id, policies, values = response_queues[0].get(timeout=2)
         assert req_id == 99
         assert policies.shape == (1, 4840)
