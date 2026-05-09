@@ -27,7 +27,7 @@ class AlphaTaflCLI(cmd.Cmd):
         self.training = False
         self.train_thread = None
         
-        self.use_batched = os.environ.get("ALPHATAFL_BATCHED", "0") == "1"
+        self.use_batched = os.environ.get("ALPHATAFL_BATCHED", "1") == "1"
         if self.use_batched:
             print("[CLI] Batched inference mode enabled (ALPHATAFL_BATCHED=1)")
         else:

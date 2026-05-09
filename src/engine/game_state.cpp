@@ -270,7 +270,7 @@ std::array<std::array<Piece, BOARD_SIZE>, BOARD_SIZE> GameState::get_historical_
     if (depth == 0) {
         return board;
     }
-    if (depth < 1 || depth > 4) {
+    if (depth < 1 || depth > 3) {
         std::array<std::array<Piece, BOARD_SIZE>, BOARD_SIZE> empty = {};
         return empty;
     }

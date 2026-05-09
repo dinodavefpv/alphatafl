@@ -122,15 +122,30 @@ def self_play_game_batched(worker_id, num_simulations, batch_size,
         # 1. batch_to_tensor from C++ → numpy → torch CPU
         tensor = engine.GameState.batch_to_tensor(states_vector)
         tensor = torch.from_numpy(tensor)  # (N, 14, 11, 11)
-        
+        # Phase 5: move to shared memory so mp.Queue serialization is zero-copy
+        tensor.share_memory_()
+
         # 2. Send to inference server
         req_id = request_counter[0]
         request_counter[0] += 1
         inference_queue.put((worker_id, req_id, tensor))
-        
-        # 3. Wait for response
-        _, policies, values = response_queue.get()  # (N, 4840), (N,)
-        
+
+        # 3. Wait for response (with generous timeout to detect dead server)
+        try:
+            _, policies, values = response_queue.get(timeout=30)
+        except Exception as e:
+            print(f"[Worker {worker_id}] Inference response timeout/error: {e}")
+            # Return uniform policy and zero value as fallback
+            fallback_p = [([1.0/4840]*4840) for _ in states_vector]
+            fallback_v = [0.0] * len(states_vector)
+            return fallback_p, fallback_v
+
+        # Phase 5: server may return shared-memory torch tensors
+        if isinstance(policies, torch.Tensor):
+            policies = policies.numpy()
+        if isinstance(values, torch.Tensor):
+            values = values.numpy()
+
         # 4. Apply legal masks and Dirichlet noise (root-only)
         results_policies = []
         results_values = []

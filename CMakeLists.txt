@@ -50,8 +50,20 @@ add_executable(engine_tests
 )
 target_link_libraries(engine_tests PRIVATE core_engine GTest::gtest_main)
 
+add_executable(regression_tests
+    tests/cpp/test_regression.cpp
+)
+target_link_libraries(regression_tests PRIVATE core_engine GTest::gtest_main)
+
+add_executable(profile_tests
+    tests/cpp/test_profile.cpp
+)
+target_link_libraries(profile_tests PRIVATE core_engine GTest::gtest_main)
+
 include(GoogleTest)
 gtest_discover_tests(engine_tests)
+gtest_discover_tests(regression_tests)
+gtest_discover_tests(profile_tests)
 
 # ------------------------------------------------------------------------------
 # Python Bindings
