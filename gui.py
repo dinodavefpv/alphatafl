@@ -91,6 +91,7 @@ class HnefataflGUI:
         self.replay_moves = []
         self.replay_index = -1
         self.probabilities = [0.0]
+        self.move_count = 0
         
         # K6: Async AI search
         self.ai_search_thread = None
@@ -116,7 +117,7 @@ class HnefataflGUI:
             if self.game.current_turn == engine.Player.DEFENDER:
                 val = -val
             
-            current_move_count = self.replay_index + 1 if self.mode == REPLAY else len(self.game.history_hashes) - 1
+            current_move_count = self.replay_index + 1 if self.mode == REPLAY else self.move_count
             if current_move_count < 0: current_move_count = 0
 
             if len(self.probabilities) <= current_move_count:
@@ -194,7 +195,7 @@ class HnefataflGUI:
         self.btn_ff.draw(win, mouse_pos)
         
         # Info text
-        turn_text = f"Turn: {self.replay_index + 2 if self.mode == REPLAY else len(self.game.history_hashes)}"
+        turn_text = f"Turn: {self.replay_index + 2 if self.mode == REPLAY else self.move_count + 1}"
         if self.game.winner != engine.Player.NONE:
             turn_text = f"WINNER: {self.game.winner.name}"
         elif self.ai_is_searching:
@@ -245,7 +246,7 @@ class HnefataflGUI:
             if len(points) > 1:
                 pygame.draw.lines(win, CHART_LINE_COLOR, False, points, 2)
             
-            curr_idx = self.replay_index + 1 if self.mode == REPLAY else len(self.game.history_hashes) - 1
+            curr_idx = self.replay_index + 1 if self.mode == REPLAY else self.move_count
             if 0 <= curr_idx < len(points):
                 pygame.draw.circle(win, (255, 0, 0), (int(points[curr_idx][0]), int(points[curr_idx][1])), 5)
 
@@ -299,6 +300,7 @@ class HnefataflGUI:
             
             if target_move:
                 self.game.apply_move(target_move)
+                self.move_count += 1
                 self.selected_piece = None
                 self.update_probability()
 
@@ -306,6 +308,7 @@ class HnefataflGUI:
         self.mode = ONE_PLAYER_VS_AI
         self.human_side = human_side
         self.game.reset()
+        self.move_count = 0
         self.probabilities = [0.0]
         self.update_probability()
         self.showing_side_selection = False
@@ -324,6 +327,7 @@ class HnefataflGUI:
                 self.replay_moves = json.load(f)
             self.mode = REPLAY
             self.game.reset()
+            self.move_count = 0
             self.replay_index = -1
             self.probabilities = []
             self.precalculate_probabilities()
@@ -349,6 +353,7 @@ class HnefataflGUI:
     def go_to_start(self):
         if self.mode == REPLAY:
             self.game.reset()
+            self.move_count = 0
             self.replay_index = -1
             self.is_playing = False
             self.btn_play.text = "Play"
@@ -362,12 +367,14 @@ class HnefataflGUI:
                 m = engine.Move(m_data["from"][0], m_data["from"][1], m_data["to"][0], m_data["to"][1])
                 self.game.winner = engine.Player.NONE
                 self.game.apply_move(m)
+            self.move_count = target_idx + 1
             self.replay_index = target_idx
             self.update_probability()
 
     def next_move(self):
         if self.mode == REPLAY and self.replay_index < len(self.replay_moves) - 1:
             self.replay_index += 1
+            self.move_count = self.replay_index + 1
             m_data = self.replay_moves[self.replay_index]
             m = engine.Move(m_data["from"][0], m_data["from"][1], m_data["to"][0], m_data["to"][1])
             self.game.winner = engine.Player.NONE
@@ -438,6 +445,7 @@ def main():
                 # Apply the completed move
                 r1, c1, r2, c2 = gui.ai_search_result
                 gui.game.apply_move(engine.Move(r1, c1, r2, c2))
+                gui.move_count += 1
                 gui.update_probability()
                 gui.ai_search_result = None
                 gui.ai_search_thread = None

@@ -75,11 +75,15 @@ class Orchestrator:
         self.active_tasks = 0
         
         self.use_batched = os.environ.get("ALPHATAFL_BATCHED", "1") == "1"
+        self.use_shm = os.environ.get("ALPHATAFL_SHM", "0") == "1"
         
         # Queues (created in parent, passed to children)
         self.inference_queue = None
         self.response_queues = None
         self.replay_queue = None
+        
+        # Shared memory regions (Phase 5A: created in parent, opened by children via name)
+        self._shm_regions = []
         
         # Inference server process
         self.inference_server_process = None
@@ -94,6 +98,32 @@ class Orchestrator:
         self.inference_queue = mp.Queue()
         self.response_queues = [mp.Queue() for _ in range(self.num_workers)]
         self.replay_queue = mp.Queue(maxsize=50000)
+        
+        # Create shared memory regions for zero-copy tensor transport
+        if self.use_shm:
+            try:
+                from multiprocessing import shared_memory
+                max_batch = int(os.environ.get("ALPHATAFL_INFERENCE_MAX_BATCH", "256"))
+                input_size = max_batch * 14 * 11 * 11 * 4  # float32 bytes
+                policy_size = max_batch * 4840 * 4
+                value_size = max_batch * 4
+                SHM_PREFIX = "alphatafl_shm"
+                for i in range(self.num_workers):
+                    shm_in = shared_memory.SharedMemory(
+                        create=True, size=input_size, name=f"{SHM_PREFIX}_input_{i}"
+                    )
+                    shm_pol = shared_memory.SharedMemory(
+                        create=True, size=policy_size, name=f"{SHM_PREFIX}_policy_{i}"
+                    )
+                    shm_val = shared_memory.SharedMemory(
+                        create=True, size=value_size, name=f"{SHM_PREFIX}_value_{i}"
+                    )
+                    self._shm_regions.extend([shm_in, shm_pol, shm_val])
+                print(f"[Orchestrator] Created {self.num_workers}x SHM regions "
+                      f"({(input_size + policy_size + value_size) * self.num_workers / (1024*1024):.1f} MB total)")
+            except Exception as e:
+                print(f"[Orchestrator] SHM creation failed: {e}, disabling")
+                self.use_shm = False
         
         self.inference_server_process = mp.Process(
             target=inference_server_main,
@@ -135,6 +165,17 @@ class Orchestrator:
                     self.inference_server_process.join(timeout=2)
                 self.inference_server_process = None
                 print("[Orchestrator] Inference server stopped")
+            
+            # Clean up shared memory regions
+            for shm in self._shm_regions:
+                try:
+                    shm.close()
+                    shm.unlink()
+                except Exception:
+                    pass
+            self._shm_regions.clear()
+            if self.use_shm:
+                self.use_shm = False
                 
     def dispatch_game(self, callback=None):
         if not self.is_running:
