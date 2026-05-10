@@ -5,6 +5,7 @@
 #include <pybind11/functional.h>
 #include "game_state.h"
 #include "mcts.h"
+#include "inference_engine.h"
 
 namespace py = pybind11;
 
@@ -84,6 +85,17 @@ PYBIND11_MODULE(alphatafl_engine, m) {
             py::arg("initial_state"), py::arg("num_simulations"))
         .def("search", static_cast<std::vector<double> (MCTS::*)(const GameState&, int, int)>(&MCTS::search),
             py::arg("initial_state"), py::arg("num_simulations"), py::arg("batch_size"));
+
+    // Phase 5B: Native C++ inference engine (eliminates Python mp.Queue)
+    py::class_<InferenceEngine>(m, "InferenceEngine")
+        .def(py::init<const std::string&, const std::string&>(),
+            py::arg("model_path"), py::arg("device") = "cuda")
+        .def("evaluate", &InferenceEngine::evaluate,
+            py::arg("states"),
+            "Evaluate a batch of GameStates. Returns (policies, values).")
+        .def("evaluate_single", &InferenceEngine::evaluate_single,
+            py::arg("state"),
+            "Evaluate a single GameState. Returns (policy, value).");
 }
 
 } // namespace alphatafl

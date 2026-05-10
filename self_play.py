@@ -114,48 +114,88 @@ def self_play_game_batched(worker_id, num_simulations, batch_size,
     cpu_device = torch.device('cpu')
     request_counter = [0]
     
+    # Shared memory transport (Phase 5A)
+    _use_shm = os.environ.get("ALPHATAFL_SHM", "0") == "1"
+    _shm_input = None
+    _shm_policy = None
+    _shm_value = None
+    
+    if _use_shm:
+        try:
+            from multiprocessing import shared_memory
+            SHM_PREFIX = "alphatafl_shm"
+            _shm_input = shared_memory.SharedMemory(name=f"{SHM_PREFIX}_input_{worker_id}")
+            _shm_policy = shared_memory.SharedMemory(name=f"{SHM_PREFIX}_policy_{worker_id}")
+            _shm_value = shared_memory.SharedMemory(name=f"{SHM_PREFIX}_value_{worker_id}")
+        except Exception as e:
+            print(f"[Worker {worker_id}] SHM init failed: {e}, falling back to queue")
+            _use_shm = False
+    
     def eval_fn_batched(states_vector):
         """Python callback passed to C++ batched MCTS."""
         if not states_vector:
             return [], []
         
-        # 1. batch_to_tensor from C++ → numpy → torch CPU
-        tensor = engine.GameState.batch_to_tensor(states_vector)
-        tensor = torch.from_numpy(tensor)  # (N, 14, 11, 11)
-        # Phase 5: move to shared memory so mp.Queue serialization is zero-copy
-        tensor.share_memory_()
-
-        # 2. Send to inference server
-        req_id = request_counter[0]
-        request_counter[0] += 1
-        inference_queue.put((worker_id, req_id, tensor))
-
-        # 3. Wait for response (with generous timeout to detect dead server)
-        try:
-            _, policies, values = response_queue.get(timeout=30)
-        except Exception as e:
-            print(f"[Worker {worker_id}] Inference response timeout/error: {e}")
-            # Return uniform policy and zero value as fallback
-            fallback_p = [([1.0/4840]*4840) for _ in states_vector]
-            fallback_v = [0.0] * len(states_vector)
-            return fallback_p, fallback_v
-
-        # Phase 5: server may return shared-memory torch tensors
-        if isinstance(policies, torch.Tensor):
-            policies = policies.numpy()
-        if isinstance(values, torch.Tensor):
-            values = values.numpy()
-
-        # 4. Apply legal masks and Dirichlet noise (root-only)
+        n_states = len(states_vector)
+        
+        if _use_shm:
+            # Write tensor data to shared memory (zero-copy memcpy, ~32us)
+            tensor_np = engine.GameState.batch_to_tensor(states_vector)
+            dest = np.ndarray((n_states, 14, 11, 11), dtype=np.float32,
+                              buffer=_shm_input.buf)
+            np.copyto(dest, tensor_np)
+            
+            # Send lightweight metadata message
+            req_id = request_counter[0]
+            request_counter[0] += 1
+            inference_queue.put((worker_id, req_id, n_states))
+            
+            # Wait for response (lightweight notification)
+            try:
+                rid, n_out = response_queue.get(timeout=30)
+            except Exception as e:
+                print(f"[Worker {worker_id}] Inference response timeout/error: {e}")
+                fallback_p = [([1.0/4840]*4840) for _ in states_vector]
+                fallback_v = [0.0] * len(states_vector)
+                return fallback_p, fallback_v
+            
+            # Read results from shared memory
+            policies = np.ndarray((n_out, 4840), dtype=np.float32,
+                                  buffer=_shm_policy.buf).copy()
+            values = np.ndarray(n_out, dtype=np.float32,
+                                buffer=_shm_value.buf).copy()
+        else:
+            # Queue path (existing behavior)
+            tensor = engine.GameState.batch_to_tensor(states_vector)
+            tensor = torch.from_numpy(tensor)
+            tensor.share_memory_()
+            
+            req_id = request_counter[0]
+            request_counter[0] += 1
+            inference_queue.put((worker_id, req_id, tensor))
+            
+            try:
+                _, policies, values = response_queue.get(timeout=30)
+            except Exception as e:
+                print(f"[Worker {worker_id}] Inference response timeout/error: {e}")
+                fallback_p = [([1.0/4840]*4840) for _ in states_vector]
+                fallback_v = [0.0] * len(states_vector)
+                return fallback_p, fallback_v
+            
+            if isinstance(policies, torch.Tensor):
+                policies = policies.numpy()
+            if isinstance(values, torch.Tensor):
+                values = values.numpy()
+        
+        # Apply legal masks and Dirichlet noise (root-only)
         results_policies = []
         results_values = []
-        is_root = (request_counter[0] == 1)  # First batch of this search is root
+        is_root = (request_counter[0] == 1)
         
         for i, s in enumerate(states_vector):
             mask = s.get_legal_moves_mask()
             p = policies[i] * mask
             
-            # Dirichlet noise for root node only
             if is_root:
                 num_legal = int(mask.sum())
                 if num_legal > 0:
@@ -164,7 +204,6 @@ def self_play_game_batched(worker_id, num_simulations, batch_size,
                     noise_full[mask > 0] = noise
                     p = 0.75 * p + 0.25 * noise_full
             
-            # Renormalize
             p_sum = p.sum()
             if p_sum > 0:
                 p /= p_sum
