@@ -77,13 +77,98 @@ PYBIND11_MODULE(alphatafl_engine, m) {
         .def_readwrite("winner", &GameState::winner);
 
     py::class_<MCTS>(m, "MCTS")
-        .def(py::init<MCTS::EvalFn, double>(),
-            py::arg("eval_fn"), py::arg("c_puct") = 1.4)
-        .def(py::init<MCTS::EvalFn, MCTS::EvalFnBatched, double>(),
-            py::arg("eval_fn"), py::arg("eval_fn_batched"), py::arg("c_puct") = 1.4)
-        .def("search", static_cast<std::vector<double> (MCTS::*)(const GameState&, int)>(&MCTS::search),
+        .def(py::init([](py::function eval_fn, double c_puct, double dirichlet_alpha, double dirichlet_epsilon) {
+            auto cpp_eval_fn = [eval_fn](const GameState& state) -> std::pair<std::vector<float>, float> {
+                py::gil_scoped_acquire acquire;
+                py::tuple result = eval_fn(state);
+                
+                py::array_t<float> policy_arr;
+                if (py::isinstance<py::array_t<float>>(result[0])) {
+                    policy_arr = result[0].cast<py::array_t<float>>();
+                } else {
+                    py::object np = py::module_::import("numpy");
+                    py::object np_arr = np.attr("array")(result[0], py::arg("dtype") = "float32");
+                    policy_arr = np_arr.cast<py::array_t<float>>();
+                }
+                
+                auto policy_buf = policy_arr.request();
+                float* policy_ptr = static_cast<float*>(policy_buf.ptr);
+                
+                std::vector<float> policy(policy_ptr, policy_ptr + 4840);
+                float value = result[1].cast<float>();
+                return {policy, value};
+            };
+            return std::make_unique<MCTS>(cpp_eval_fn, c_puct, dirichlet_alpha, dirichlet_epsilon);
+        }), py::arg("eval_fn"), py::arg("c_puct") = 1.4, py::arg("dirichlet_alpha") = 0.3, py::arg("dirichlet_epsilon") = 0.0)
+        .def(py::init([](py::function eval_fn, py::object eval_fn_batched_obj, double c_puct, double dirichlet_alpha, double dirichlet_epsilon) {
+            auto cpp_eval_fn = [eval_fn](const GameState& state) -> std::pair<std::vector<float>, float> {
+                py::gil_scoped_acquire acquire;
+                py::tuple result = eval_fn(state);
+                
+                py::array_t<float> policy_arr;
+                if (py::isinstance<py::array_t<float>>(result[0])) {
+                    policy_arr = result[0].cast<py::array_t<float>>();
+                } else {
+                    py::object np = py::module_::import("numpy");
+                    py::object np_arr = np.attr("array")(result[0], py::arg("dtype") = "float32");
+                    policy_arr = np_arr.cast<py::array_t<float>>();
+                }
+                
+                auto policy_buf = policy_arr.request();
+                float* policy_ptr = static_cast<float*>(policy_buf.ptr);
+                
+                std::vector<float> policy(policy_ptr, policy_ptr + 4840);
+                float value = result[1].cast<float>();
+                return {policy, value};
+            };
+            
+            if (eval_fn_batched_obj.is_none()) {
+                return std::make_unique<MCTS>(cpp_eval_fn, c_puct, dirichlet_alpha, dirichlet_epsilon);
+            }
+            
+            py::function eval_fn_batched = eval_fn_batched_obj.cast<py::function>();
+            
+            auto cpp_eval_fn_batched = [eval_fn_batched](const std::vector<GameState>& states) -> std::pair<std::vector<float>, std::vector<float>> {
+                py::gil_scoped_acquire acquire;
+                py::tuple result = eval_fn_batched(states);
+                
+                py::array_t<float> policies_arr;
+                if (py::isinstance<py::array_t<float>>(result[0])) {
+                    policies_arr = result[0].cast<py::array_t<float>>();
+                } else {
+                    py::object np = py::module_::import("numpy");
+                    py::object np_arr = np.attr("array")(result[0], py::arg("dtype") = "float32");
+                    policies_arr = np_arr.cast<py::array_t<float>>();
+                }
+                
+                py::array_t<float> values_arr;
+                if (py::isinstance<py::array_t<float>>(result[1])) {
+                    values_arr = result[1].cast<py::array_t<float>>();
+                } else {
+                    py::object np = py::module_::import("numpy");
+                    py::object np_arr = np.attr("array")(result[1], py::arg("dtype") = "float32");
+                    values_arr = np_arr.cast<py::array_t<float>>();
+                }
+                
+                auto policies_buf = policies_arr.request();
+                auto values_buf = values_arr.request();
+                
+                float* policies_ptr = static_cast<float*>(policies_buf.ptr);
+                float* values_ptr = static_cast<float*>(values_buf.ptr);
+                
+                size_t num_states = states.size();
+                
+                std::vector<float> flat_policies(policies_ptr, policies_ptr + num_states * 4840);
+                std::vector<float> flat_values(values_ptr, values_ptr + num_states);
+                
+                return {flat_policies, flat_values};
+            };
+            
+            return std::make_unique<MCTS>(cpp_eval_fn, cpp_eval_fn_batched, c_puct, dirichlet_alpha, dirichlet_epsilon);
+        }), py::arg("eval_fn"), py::arg("eval_fn_batched"), py::arg("c_puct") = 1.4, py::arg("dirichlet_alpha") = 0.3, py::arg("dirichlet_epsilon") = 0.0)
+        .def("search", static_cast<std::vector<float> (MCTS::*)(const GameState&, int)>(&MCTS::search),
             py::arg("initial_state"), py::arg("num_simulations"))
-        .def("search", static_cast<std::vector<double> (MCTS::*)(const GameState&, int, int)>(&MCTS::search),
+        .def("search", static_cast<std::vector<float> (MCTS::*)(const GameState&, int, int)>(&MCTS::search),
             py::arg("initial_state"), py::arg("num_simulations"), py::arg("batch_size"));
 
     // Phase 5B: Native C++ inference engine (eliminates Python mp.Queue)

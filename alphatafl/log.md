@@ -1,5 +1,24 @@
 # AlphaTafl Wiki Log
 
+## [2026-05-28] Memory | Step 2 Sparse Priors Optimization
+- Stored prior probabilities sparsely parallel to `legal_action_indices`. Added binary search lookup helper `MCTSNode::get_child_prior()` for node creation.
+- Updated MCTS child selection to iterate sequentially and access parallel `child_priors[i]` sequentially, resulting in cache-friendly operations.
+- Re-routed root Dirichlet noise generation to map directly to sequential indices.
+- Node memory footprint dropped from 19.5 KB to **1.078 KB / node** (a **18x reduction**). Aggregate 800-sim tree memory dropped to **1.56 MB** (down from 15.6 MB).
+- C++ MCTS synthetic throughput increased by **22%** (to 61,072 states/second) due to sequential cache friendliness.
+- E2E Turn Time reduced to **207 ms / turn** (41.4s total game time), yielding a **40% speedup** vs baseline.
+- Created `alphatafl/docs/history/optimization_v1_phase5.md` to document the entire Phase 5 optimization progress. Updated `alphatafl/docs/history/optimization_v1_benchmarks.md` with Section 12.
+- Updated `alphatafl/log.md` and `alphatafl/index.md`.
+
+## [2026-05-28] Add | Step 1 C++ MCTS Callback Optimization
+- Reimplemented legal move masking, softmax normalization, and Dirichlet noise in C++ using zero-copy memory views.
+- Modified Pybind11 wrapper and `self_play.py` to extract raw flat policy/value arrays directly from NumPy buffers, bypassing Python list marshalling.
+- Eliminated Python callback list build overhead (**6.5 ms -> 0.0 ms**), reducing E2E Turn Time to **216 - 244 ms / turn** (up to 37.5% speedup vs 346 ms baseline).
+- Resolved NumPy `np.random.choice` probability sum ValueError by re-normalizing MCTS search outputs in float64.
+- Wrapped benchmarks in a `try...finally` block to guarantee subprocess/SHM cleanup on error or cancellation.
+- Updated `alphatafl/docs/history/optimization_v1_benchmarks.md`: Added Section 11 (Phase 5D Step 1 results), resolved python masking loop unknowns.
+- Updated `alphatafl/log.md` and `alphatafl/index.md`.
+
 ## [2026-05-09] Add | Python Callback Micro-Profile
 - Instrumented `eval_fn_batched` in `benchmarks/time_single_game.py` with per-step `time.perf_counter()` timers. Collected 1755 batch samples across one 200-turn 800-sim game.
 - Measured per-batch breakdown: mp.Queue.get (await server) = 13.9ms (58%), Python list `.tolist()` build = 6.5ms (27%), C++ `batch_to_tensor` + pybind11 wrap = 3.0ms (12%), SHM memcpy = 0.5ms (2%), mp.Queue.put = negligible.

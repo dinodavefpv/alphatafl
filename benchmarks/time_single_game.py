@@ -157,8 +157,8 @@ def main():
             rid, n_out = response_queues[worker_id].get(timeout=120)
         except Exception as e:
             print(f"Inference timeout: {e}")
-            fallback_p = [([1.0 / 4840] * 4840) for _ in states_vector]
-            fallback_v = [0.0] * len(states_vector)
+            fallback_p = np.full((n_states, 4840), 1.0 / 4840.0, dtype=np.float32)
+            fallback_v = np.zeros(n_states, dtype=np.float32)
             return fallback_p, fallback_v
         t4 = time.perf_counter()
 
@@ -166,27 +166,6 @@ def main():
         policies = np.ndarray((n_out, 4840), dtype=np.float32, buffer=shm_policy.buf).copy()
         values = np.ndarray(n_out, dtype=np.float32, buffer=shm_value.buf).copy()
         t5 = time.perf_counter()
-
-        # Step 6: Legal masking + Dirichlet noise + list construction
-        results_policies = []
-        results_values = []
-        is_root = (request_counter[0] == 1)
-
-        for i, s in enumerate(states_vector):
-            mask = s.get_legal_moves_mask()
-            p = policies[i] * mask
-            if is_root:
-                num_legal = int(mask.sum())
-                if num_legal > 0:
-                    noise = np.random.dirichlet([0.3] * num_legal)
-                    noise_full = np.zeros(4840, dtype=np.float32)
-                    noise_full[mask > 0] = noise
-                    p = 0.75 * p + 0.25 * noise_full
-            p_sum = p.sum()
-            if p_sum > 0:
-                p /= p_sum
-            results_policies.append(p.tolist())
-            results_values.append(float(values[i]))
 
         t6 = time.perf_counter()
 
@@ -199,16 +178,19 @@ def main():
         timing['list_build'] += (t6 - t5) * 1000
         timing['calls'] += 1
 
-        return results_policies, results_values
+        return policies, values
 
     def eval_fn_single(state_to_eval):
         policies, values = eval_fn_batched([state_to_eval])
         return policies[0], values[0]
 
+    # Create MCTS with both callbacks and Dirichlet noise settings enabled
     mcts = engine.MCTS(
         eval_fn=eval_fn_single,
         eval_fn_batched=eval_fn_batched,
-        c_puct=1.4
+        c_puct=1.4,
+        dirichlet_alpha=0.3,
+        dirichlet_epsilon=0.25
     )
 
     print(f"\nStarting 800-sim self-play game...")
@@ -216,47 +198,53 @@ def main():
     batch_count = 0
     t0 = time.time()
 
-    while state.winner == engine.Player.NONE:
-        turn_start = time.time()
-        probs_list = mcts.search(state, num_simulations, batch_size)
-        turn_time = time.time() - turn_start
-
-        probs = np.array(probs_list)
-
-        if total_turns < 30:
-            action = np.random.choice(len(probs), p=probs)
-        else:
-            action = np.argmax(probs)
-
-        from_r, from_c, to_r, to_c = get_move_from_index(action)
-        state.apply_move(engine.Move(from_r, from_c, to_r, to_c))
-        total_turns += 1
-        batch_count += 1
-
-        if total_turns <= 5 or total_turns % 20 == 0:
-            print(f"  Turn {total_turns:>3}: {turn_time:.2f}s "
-                  f"({state.current_turn.name} moves ({from_r},{from_c})->({to_r},{to_c}))")
-
-        if total_turns >= 200:
-            break
-
-    t1 = time.time()
-    total_time = t1 - t0
-
-    # Shutdown
-    server_stop.set()
     try:
-        inference_queue.put(None)
-    except Exception:
-        pass
-    server_proc.join(timeout=5)
-    if server_proc.is_alive():
-        server_proc.terminate()
-        server_proc.join(timeout=2)
+        while state.winner == engine.Player.NONE:
+            turn_start = time.time()
+            probs_list = mcts.search(state, num_simulations, batch_size)
+            turn_time = time.time() - turn_start
 
-    drain_stop.set()
-    drain_thread.join(timeout=1)
-    cleanup_shm(shms)
+            probs = np.array(probs_list, dtype=np.float64)
+            probs_sum = probs.sum()
+            if probs_sum > 0:
+                probs /= probs_sum
+            else:
+                probs = np.full(len(probs), 1.0 / len(probs))
+
+            if total_turns < 30:
+                action = np.random.choice(len(probs), p=probs)
+            else:
+                action = np.argmax(probs)
+
+            from_r, from_c, to_r, to_c = get_move_from_index(action)
+            state.apply_move(engine.Move(from_r, from_c, to_r, to_c))
+            total_turns += 1
+            batch_count += 1
+
+            if total_turns <= 5 or total_turns % 20 == 0:
+                print(f"  Turn {total_turns:>3}: {turn_time:.2f}s "
+                      f"({state.current_turn.name} moves ({from_r},{from_c})->({to_r},{to_c}))")
+
+            if total_turns >= 200:
+                break
+
+        t1 = time.time()
+        total_time = t1 - t0
+    finally:
+        # Shutdown
+        server_stop.set()
+        try:
+            inference_queue.put(None)
+        except Exception:
+            pass
+        server_proc.join(timeout=5)
+        if server_proc.is_alive():
+            server_proc.terminate()
+            server_proc.join(timeout=2)
+
+        drain_stop.set()
+        drain_thread.join(timeout=1)
+        cleanup_shm(shms)
 
     # Report
     print(f"\n{'='*60}")

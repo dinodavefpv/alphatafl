@@ -230,7 +230,7 @@ Setting `ALPHATAFL_BATCHED=0` falls back to the legacy single-leaf path for A/B 
 The Inference Server checks `os.path.getmtime("models/current_best.pt")` every 10 batches. Calls `model.load_state_dict(torch.load(...))` only when mtime changes. Workers never touch model files.
 
 ### Shutdown
-- `cli.py` signals the `stop_event`. The server exits its main loop and terminates cleanly.
+- `cli.py` signals the `stop_event` or sends a `None` sentinel on `inference_queue`. The server exits its main loop and terminates cleanly.
 - Workers blocked on `response_queues[worker_id].get()` receive an `EOFError`/`None` and exit.
 
 ### Windows Note

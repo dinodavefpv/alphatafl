@@ -13,37 +13,40 @@ public:
     MCTSNode* parent;
     int visit_count;
     double value_sum;
-    double prior;
+    float prior;
     bool is_expanded;
     bool is_pending;
 
     std::unordered_map<int, std::unique_ptr<MCTSNode>> children;
-    std::vector<double> child_priors;
+    std::vector<float> child_priors;
     std::vector<int> legal_action_indices;
 
-    MCTSNode(MCTSNode* parent = nullptr, double prior = 0.0);
+    MCTSNode(MCTSNode* parent = nullptr, float prior = 0.0f);
 
     double get_value() const;
     int select_child(double c_puct) const;
-    void expand(const std::vector<double>& action_probs);
+    void expand(const std::vector<float>& action_probs, const std::vector<float>& legal_mask);
+    float get_child_prior(int action) const;
 };
 
 class MCTS {
 public:
     double c_puct;
-    using EvalFn = std::function<std::pair<std::vector<double>, double>(const GameState&)>;
+    double dirichlet_alpha;
+    double dirichlet_epsilon;
+    using EvalFn = std::function<std::pair<std::vector<float>, float>(const GameState&)>;
     using EvalFnBatched = std::function<
-        std::pair<std::vector<std::vector<double>>, std::vector<double>>(
+        std::pair<std::vector<float>, std::vector<float>>(
             const std::vector<GameState>&
         )>;
     EvalFn eval_fn;
     EvalFnBatched eval_fn_batched;
 
-    MCTS(EvalFn eval_fn, double c_puct = 1.4);
-    MCTS(EvalFn eval_fn, EvalFnBatched eval_fn_batched, double c_puct = 1.4);
+    MCTS(EvalFn eval_fn, double c_puct = 1.4, double dirichlet_alpha = 0.3, double dirichlet_epsilon = 0.0);
+    MCTS(EvalFn eval_fn, EvalFnBatched eval_fn_batched, double c_puct = 1.4, double dirichlet_alpha = 0.3, double dirichlet_epsilon = 0.0);
 
-    std::vector<double> search(const GameState& initial_state, int num_simulations);
-    std::vector<double> search(const GameState& initial_state, int num_simulations, int batch_size);
+    std::vector<float> search(const GameState& initial_state, int num_simulations);
+    std::vector<float> search(const GameState& initial_state, int num_simulations, int batch_size);
 };
 
 constexpr inline int get_action_index(int from_row, int from_col, int to_row, int to_col, int board_size = 11) {

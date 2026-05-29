@@ -52,8 +52,7 @@ class TestK8TorchCompile:
             policy1, value1 = model1(tensor)
         
         # Compiled
-        model2 = AlphaTaflNet().eval()
-        model2 = self._try_compile(model2, sample_input=tensor)
+        model2 = self._try_compile(model1, sample_input=tensor)
         with torch.no_grad():
             policy2, value2 = model2(tensor)
         

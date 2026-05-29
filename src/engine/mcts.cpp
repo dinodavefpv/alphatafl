@@ -1,9 +1,10 @@
 #include "mcts.h"
 #include <limits>
+#include <random>
 
 namespace alphatafl {
 
-MCTSNode::MCTSNode(MCTSNode* parent, double prior)
+MCTSNode::MCTSNode(MCTSNode* parent, float prior)
     : parent(parent), visit_count(0), value_sum(0.0), prior(prior), is_expanded(false), is_pending(false) {}
 
 double MCTSNode::get_value() const {
@@ -15,8 +16,9 @@ int MCTSNode::select_child(double c_puct) const {
     double best_score = -std::numeric_limits<double>::infinity();
     int best_action = -1;
     
-    for (int action : legal_action_indices) {
-        double prob = child_priors[action];
+    for (size_t i = 0; i < legal_action_indices.size(); ++i) {
+        int action = legal_action_indices[i];
+        double prob = child_priors[i];
         
         double score = 0.0;
         auto it = children.find(action);
@@ -36,28 +38,84 @@ int MCTSNode::select_child(double c_puct) const {
     return best_action;
 }
 
-void MCTSNode::expand(const std::vector<double>& action_probs) {
+float MCTSNode::get_child_prior(int action) const {
+    auto it = std::lower_bound(legal_action_indices.begin(), legal_action_indices.end(), action);
+    if (it != legal_action_indices.end() && *it == action) {
+        return child_priors[std::distance(legal_action_indices.begin(), it)];
+    }
+    return 0.0f;
+}
+
+void MCTSNode::expand(const std::vector<float>& action_probs, const std::vector<float>& legal_mask) {
     is_expanded = true;
-    child_priors = action_probs;
     legal_action_indices.clear();
+    child_priors.clear();
+    
+    float max_logit = -std::numeric_limits<float>::infinity();
+    bool has_legal = false;
     for (size_t i = 0; i < action_probs.size(); ++i) {
-        if (action_probs[i] > 0.0)
-            legal_action_indices.push_back(static_cast<int>(i));
+        if (legal_mask[i] > 0.5f) {
+            has_legal = true;
+            if (action_probs[i] > max_logit) {
+                max_logit = action_probs[i];
+            }
+        }
+    }
+    
+    if (!has_legal) return;
+    
+    float sum_exp = 0.0f;
+    std::vector<std::pair<int, float>> exp_logits;
+    for (size_t i = 0; i < action_probs.size(); ++i) {
+        if (legal_mask[i] > 0.5f) {
+            float exp_val = std::exp(action_probs[i] - max_logit);
+            exp_logits.push_back({static_cast<int>(i), exp_val});
+            sum_exp += exp_val;
+        }
+    }
+    
+    legal_action_indices.reserve(exp_logits.size());
+    child_priors.reserve(exp_logits.size());
+    for (const auto& pair : exp_logits) {
+        legal_action_indices.push_back(pair.first);
+        child_priors.push_back(pair.second / sum_exp);
     }
 }
 
-MCTS::MCTS(EvalFn eval_fn, double c_puct)
-    : eval_fn(eval_fn), eval_fn_batched(nullptr), c_puct(c_puct) {}
+MCTS::MCTS(EvalFn eval_fn, double c_puct, double dirichlet_alpha, double dirichlet_epsilon)
+    : eval_fn(eval_fn), eval_fn_batched(nullptr), c_puct(c_puct), dirichlet_alpha(dirichlet_alpha), dirichlet_epsilon(dirichlet_epsilon) {}
 
-MCTS::MCTS(EvalFn eval_fn, EvalFnBatched eval_fn_batched, double c_puct)
-    : eval_fn(eval_fn), eval_fn_batched(eval_fn_batched), c_puct(c_puct) {}
+MCTS::MCTS(EvalFn eval_fn, EvalFnBatched eval_fn_batched, double c_puct, double dirichlet_alpha, double dirichlet_epsilon)
+    : eval_fn(eval_fn), eval_fn_batched(eval_fn_batched), c_puct(c_puct), dirichlet_alpha(dirichlet_alpha), dirichlet_epsilon(dirichlet_epsilon) {}
 
-std::vector<double> MCTS::search(const GameState& initial_state, int num_simulations) {
+std::vector<float> MCTS::search(const GameState& initial_state, int num_simulations) {
     MCTSNode root;
     GameState traversal = initial_state.clone();
 
     auto eval_result = eval_fn(traversal);
-    root.expand(eval_result.first);
+    root.expand(eval_result.first, traversal.get_legal_moves_mask());
+
+    // Apply Dirichlet noise to the root node if enabled
+    if (dirichlet_epsilon > 0.0 && !root.legal_action_indices.empty()) {
+        static std::random_device rd;
+        static std::mt19937 gen(rd());
+        std::gamma_distribution<double> gamma_dist(dirichlet_alpha, 1.0);
+        
+        std::vector<double> noise(root.legal_action_indices.size());
+        double sum = 0.0;
+        for (size_t i = 0; i < root.legal_action_indices.size(); ++i) {
+            noise[i] = gamma_dist(gen);
+            sum += noise[i];
+        }
+        
+        if (sum > 0.0) {
+            for (size_t i = 0; i < root.legal_action_indices.size(); ++i) {
+                float noise_prob = static_cast<float>(noise[i] / sum);
+                root.child_priors[i] = (1.0f - static_cast<float>(dirichlet_epsilon)) * root.child_priors[i] + 
+                                       static_cast<float>(dirichlet_epsilon) * noise_prob;
+            }
+        }
+    }
 
     for (int i = 0; i < num_simulations; ++i) {
         MCTSNode* node = &root;
@@ -83,7 +141,7 @@ std::vector<double> MCTS::search(const GameState& initial_state, int num_simulat
                 traversal.apply_move_inplace(move, undo);
                 undo_stack.push_back(undo);
 
-                auto child = std::make_unique<MCTSNode>(node, node->child_priors[action]);
+                auto child = std::make_unique<MCTSNode>(node, node->get_child_prior(action));
                 MCTSNode* child_ptr = child.get();
                 node->children[action] = std::move(child);
                 node = child_ptr;
@@ -96,7 +154,7 @@ std::vector<double> MCTS::search(const GameState& initial_state, int num_simulat
         if (traversal.winner == Player::NONE) {
             auto child_eval = eval_fn(traversal);
             leaf_value = child_eval.second;
-            node->expand(child_eval.first);
+            node->expand(child_eval.first, traversal.get_legal_moves_mask());
         } else {
             if (traversal.winner == Player::ATTACKER) {
                 leaf_value = (traversal.current_turn == Player::ATTACKER) ? 1.0 : -1.0;
@@ -121,23 +179,23 @@ std::vector<double> MCTS::search(const GameState& initial_state, int num_simulat
         }
     }
 
-    std::vector<double> probs(BOARD_SIZE * BOARD_SIZE * 40, 0.0);
+    std::vector<float> probs(BOARD_SIZE * BOARD_SIZE * 40, 0.0f);
     double sum = 0.0;
     for (const auto& kv : root.children) {
         int action = kv.first;
         const MCTSNode* child = kv.second.get();
-        probs[action] = child->visit_count;
+        probs[action] = static_cast<float>(child->visit_count);
         sum += child->visit_count;
     }
     if (sum > 0.0) {
-        for (double& p : probs) {
+        for (float& p : probs) {
             p /= sum;
         }
     }
     return probs;
 }
 
-std::vector<double> MCTS::search(const GameState& initial_state, int num_simulations, int batch_size) {
+std::vector<float> MCTS::search(const GameState& initial_state, int num_simulations, int batch_size) {
     if (batch_size <= 0 || !eval_fn_batched) {
         return search(initial_state, num_simulations);
     }
@@ -146,7 +204,29 @@ std::vector<double> MCTS::search(const GameState& initial_state, int num_simulat
     GameState traversal = initial_state.clone();
 
     auto eval_result = eval_fn(traversal);
-    root.expand(eval_result.first);
+    root.expand(eval_result.first, traversal.get_legal_moves_mask());
+
+    // Apply Dirichlet noise to the root node if enabled
+    if (dirichlet_epsilon > 0.0 && !root.legal_action_indices.empty()) {
+        static std::random_device rd;
+        static std::mt19937 gen(rd());
+        std::gamma_distribution<double> gamma_dist(dirichlet_alpha, 1.0);
+        
+        std::vector<double> noise(root.legal_action_indices.size());
+        double sum = 0.0;
+        for (size_t i = 0; i < root.legal_action_indices.size(); ++i) {
+            noise[i] = gamma_dist(gen);
+            sum += noise[i];
+        }
+        
+        if (sum > 0.0) {
+            for (size_t i = 0; i < root.legal_action_indices.size(); ++i) {
+                float noise_prob = static_cast<float>(noise[i] / sum);
+                root.child_priors[i] = (1.0f - static_cast<float>(dirichlet_epsilon)) * root.child_priors[i] + 
+                                       static_cast<float>(dirichlet_epsilon) * noise_prob;
+            }
+        }
+    }
 
     int simulations_done = 0;
     std::vector<MCTSNode*> pending_nodes;
@@ -167,7 +247,9 @@ std::vector<double> MCTS::search(const GameState& initial_state, int num_simulat
             node->visit_count += 1;
             node->value_sum += values[i];
             node->is_pending = false;
-            node->expand(policies[i]);
+            
+            std::vector<float> policies_slice(policies.begin() + i * 4840, policies.begin() + (i + 1) * 4840);
+            node->expand(policies_slice, pending_states[i].get_legal_moves_mask());
 
             double back_val = values[i];
             MCTSNode* p = node->parent;
@@ -228,7 +310,7 @@ std::vector<double> MCTS::search(const GameState& initial_state, int num_simulat
                 traversal.apply_move_inplace(move, undo);
                 undo_stack.push_back(undo);
 
-                auto child = std::make_unique<MCTSNode>(node, node->child_priors[action]);
+                auto child = std::make_unique<MCTSNode>(node, node->get_child_prior(action));
                 MCTSNode* child_ptr = child.get();
                 node->children[action] = std::move(child);
                 node = child_ptr;
@@ -309,16 +391,16 @@ std::vector<double> MCTS::search(const GameState& initial_state, int num_simulat
 
     flush_batch();
 
-    std::vector<double> probs(BOARD_SIZE * BOARD_SIZE * 40, 0.0);
+    std::vector<float> probs(BOARD_SIZE * BOARD_SIZE * 40, 0.0f);
     double sum = 0.0;
     for (const auto& kv : root.children) {
         int action = kv.first;
         const MCTSNode* child = kv.second.get();
-        probs[action] = child->visit_count;
+        probs[action] = static_cast<float>(child->visit_count);
         sum += child->visit_count;
     }
     if (sum > 0.0) {
-        for (double& p : probs) {
+        for (float& p : probs) {
             p /= sum;
         }
     }

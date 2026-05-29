@@ -4,6 +4,7 @@
 - [Version Summary](./docs/history/readme.md): Conventions and high-level overview of all versions.
 - [v0 — Initial Implementation](./docs/history/initial_v0.md): Baseline implementation and known bottlenecks.
 - [v1 — Performance Optimization](./docs/history/optimization_v1.md): Phases 1–4 optimization round.
+- [v1 — Phase 5 Optimization](./docs/history/optimization_v1_phase5.md): Phase 5 adaptive timeout, SHM transport, C++ MCTS callback, and sparse priors.
 - [v1 — Benchmarks](./docs/history/optimization_v1_benchmarks.md): Compiled quantitative benchmarks from all optimization phases.
 
 ## Core Documentation
@@ -27,6 +28,8 @@
 - [CLI](./docs/api/cli.md): Command-line interface.
 
 ## Recent Updates
+- **2026-05-28**: Step 2 (Sparse Priors) completed. Reduced node memory footprint by 18x to **1.078 KB / node** (aggregate tree memory down to **1.56 MB**). Yielded a **22% C++ MCTS throughput increase** (to 61,072 states/sec) due to cache-friendly sequential selection. Turn time reduced to **207 ms / turn**.
+- **2026-05-28**: Step 1 (C++ Callback) completed. Moved legal move masking, softmax normalization, and Dirichlet noise generation into native C++. Eliminated Python callback list build overhead (**6.5 ms -> 0.0 ms**), reducing 800-sim E2E Turn Time to **216 - 244 ms / turn**.
 - **2026-05-09**: Callback micro-profile confirms bottleneck is Python process boundary. mp.Queue.get 13.9ms (58%) + list build 6.5ms (27%) + pybind11 wrap 3.0ms (12%) = 23.8ms/batch. 84% eliminable via C++ native inference (libtorch/ONNX).
 - **2026-05-09**: Deep-tree profile + single-game timing corrects bottleneck analysis. C++ MCTS is fast (23µs/sim, flat with tree depth). Real bottleneck is Python callback per batch: mp.Queue pipes + list construction = ~42ms/batch (65% of 346ms/turn). libtorch/ONNX Runtime reprioritized as next step.
 - **2026-05-09**: Batch size sweep confirms redundancy (bs ≥ sims = identical throughput) but disproves IPC-only projection model.

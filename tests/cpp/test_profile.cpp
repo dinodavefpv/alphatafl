@@ -33,12 +33,13 @@ TEST(ProfileTest, SelectChildSpeed) {
 
     // Build a node with these legal moves as priors
     MCTSNode node;
-    std::vector<double> priors(121 * 40, 0.0);
+    std::vector<float> priors(121 * 40, 0.0f);
+    std::vector<float> mask(121 * 40, 0.0f);
     for (const auto& m : moves) {
         int idx = get_action_index(m.from_row, m.from_col, m.to_row, m.to_col);
-        priors[idx] = 1.0 / num_legal;
+        mask[idx] = 1.0f;
     }
-    node.expand(priors);
+    node.expand(priors, mask);
 
     double avg_us = measure_us([&]() {
         node.select_child(1.4);
@@ -108,14 +109,14 @@ TEST(ProfileTest, LegalMovesMaskSpeed) {
 TEST(ProfileTest, MctsThroughput) {
     GameState state;
 
-    MCTS::EvalFn eval = [](const GameState& s) -> std::pair<std::vector<double>, double> {
+    MCTS::EvalFn eval = [](const GameState& s) -> std::pair<std::vector<float>, float> {
         auto legal = s.get_legal_moves();
-        std::vector<double> probs(121 * 40, 0.0);
+        std::vector<float> probs(121 * 40, 0.0f);
         for (const auto& m : legal) {
             int idx = get_action_index(m.from_row, m.from_col, m.to_row, m.to_col);
-            probs[idx] = 1.0 / legal.size();
+            probs[idx] = 1.0f / legal.size();
         }
-        return {probs, 0.0};
+        return {probs, 0.0f};
     };
 
     MCTS mcts(eval, 1.4);
@@ -197,14 +198,14 @@ TEST(ProfileTest, DeepTreeTraversal) {
         state = GameState(); // reset if terminal
     }
 
-    MCTS::EvalFn eval = [](const GameState& s) -> std::pair<std::vector<double>, double> {
+    MCTS::EvalFn eval = [](const GameState& s) -> std::pair<std::vector<float>, float> {
         auto legal = s.get_legal_moves();
-        std::vector<double> probs(121 * 40, 0.0);
+        std::vector<float> probs(121 * 40, 0.0f);
         for (const auto& m : legal) {
             int idx = get_action_index(m.from_row, m.from_col, m.to_row, m.to_col);
-            probs[idx] = 1.0 / legal.size();
+            probs[idx] = 1.0f / legal.size();
         }
-        return {probs, 0.0};
+        return {probs, 0.0f};
     };
 
     std::cout << "\n[Profile] Deep Tree Traversal (mid-game position, 20 random moves in):"
@@ -257,23 +258,24 @@ TEST(ProfileTest, NodeMemoryFootprint) {
     // Measure child_priors capacity impact
     MCTSNode node;
     int action_space = GameState::ACTION_SPACE;
-    std::vector<double> priors(action_space, 0.0);
-    for (int i = 0; i < 120; ++i) priors[i] = 1.0 / 120;
-    node.expand(priors);
+    std::vector<float> priors(action_space, 0.0f);
+    std::vector<float> mask(action_space, 0.0f);
+    for (int i = 0; i < 120; ++i) mask[i] = 1.0f;
+    node.expand(priors, mask);
 
-    size_t priors_bytes = node.child_priors.capacity() * sizeof(double);
+    size_t priors_bytes = node.child_priors.capacity() * sizeof(float);
     size_t indices_bytes = node.legal_action_indices.capacity() * sizeof(int);
     size_t children_overhead = node.children.size() * (sizeof(int) + sizeof(std::unique_ptr<MCTSNode>) + sizeof(void*) * 2);
     size_t total_node_bytes = sizeof(MCTSNode) + priors_bytes + indices_bytes + children_overhead;
 
     std::cout << "  Expanded node breakdown:" << std::endl;
-    std::cout << "    child_priors capacity: " << node.child_priors.capacity() << " doubles = " << priors_bytes << " bytes (" << (priors_bytes / 1024.0) << " KB)" << std::endl;
+    std::cout << "    child_priors capacity: " << node.child_priors.capacity() << " floats = " << priors_bytes << " bytes (" << (priors_bytes / 1024.0) << " KB)" << std::endl;
     std::cout << "    legal_action_indices capacity: " << node.legal_action_indices.capacity() << " ints = " << indices_bytes << " bytes" << std::endl;
     std::cout << "    children overestimate: ~" << children_overhead << " bytes" << std::endl;
     std::cout << "    total per expanded node: ~" << total_node_bytes << " bytes (" << (total_node_bytes / 1024.0) << " KB)" << std::endl;
 
     std::cout << "    Non-zero priors: 120 / " << action_space << " (" << (100.0 * 120 / action_space) << "%)" << std::endl;
-    std::cout << "    waste if storing dense: " << ((priors_bytes - 120 * sizeof(double)) / 1024.0) << " KB of zeros per node" << std::endl;
+    std::cout << "    waste if storing dense: " << ((priors_bytes - 120 * sizeof(float)) / 1024.0) << " KB of zeros per node" << std::endl;
 
     EXPECT_GT(total_node_bytes, 0);
 }
@@ -291,17 +293,17 @@ TEST(ProfileTest, MctsMemoryGrowth) {
     }
 
     int action_space = GameState::ACTION_SPACE;
-    MCTS::EvalFn eval = [action_space](const GameState& s) -> std::pair<std::vector<double>, double> {
+    MCTS::EvalFn eval = [action_space](const GameState& s) -> std::pair<std::vector<float>, float> {
         auto legal = s.get_legal_moves();
-        std::vector<double> probs(action_space, 0.0);
+        std::vector<float> probs(action_space, 0.0f);
         for (const auto& m : legal) {
             int idx = get_action_index(m.from_row, m.from_col, m.to_row, m.to_col);
-            probs[idx] = 1.0 / legal.size();
+            probs[idx] = 1.0f / legal.size();
         }
-        return {probs, 0.0};
+        return {probs, 0.0f};
     };
 
-    static constexpr size_t EST_NODE_BYTES = 40000;
+    static constexpr size_t EST_NODE_BYTES = 2000;
 
     std::cout << "\n[Profile] MCTS Tree Memory Growth vs Sims (synthetic eval, no NN)" << std::endl;
     std::cout << "  Sims   | Nodes | Est Mem (KB) | KB/Sim | Sims/sec | Time(ms)" << std::endl;
@@ -310,7 +312,7 @@ TEST(ProfileTest, MctsMemoryGrowth) {
     for (int sims : {100, 400, 800, 1600}) {
         MCTSNode root_node;
         auto res = eval(state);
-        root_node.expand(res.first);
+        root_node.expand(res.first, state.get_legal_moves_mask());
 
         GameState traversal = state.clone();
         int total_nodes = 1;
@@ -337,7 +339,7 @@ TEST(ProfileTest, MctsMemoryGrowth) {
                     traversal.apply_move_inplace(move, undo);
                     undo_stack.push_back(undo);
 
-                    auto child = std::make_unique<MCTSNode>(node, node->child_priors[action]);
+                    auto child = std::make_unique<MCTSNode>(node, node->get_child_prior(action));
                     MCTSNode* child_ptr = child.get();
                     node->children[action] = std::move(child);
                     node = child_ptr;
@@ -348,7 +350,7 @@ TEST(ProfileTest, MctsMemoryGrowth) {
 
             if (traversal.winner == Player::NONE) {
                 auto child_eval = eval(traversal);
-                node->expand(child_eval.first);
+                node->expand(child_eval.first, traversal.get_legal_moves_mask());
             }
 
             double leaf_value = 0.0;

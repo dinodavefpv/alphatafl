@@ -43,7 +43,7 @@ class TestK0Framework:
 class TestK1InterfaceDocument:
     """K1: Verify the interface contract document exists and is complete."""
 
-    CONTRACT_PATH = os.path.join(PROJECT_ROOT, 'wiki', 'docs', 'api', 'interface_contract.md')
+    CONTRACT_PATH = os.path.join(PROJECT_ROOT, 'alphatafl', 'docs', 'api', 'interface_contract.md')
 
     def test_interface_document_exists(self):
         assert os.path.isfile(self.CONTRACT_PATH), (

@@ -49,7 +49,12 @@ def self_play_game(model, num_simulations=100, verbose=True):
 
         mcts = engine.MCTS(eval_fn, 1.4)
         probs_list = mcts.search(state, num_simulations)
-        probs = np.array(probs_list)
+        probs = np.array(probs_list, dtype=np.float64)
+        probs_sum = probs.sum()
+        if probs_sum > 0:
+            probs /= probs_sum
+        else:
+            probs = np.full(len(probs), 1.0 / len(probs))
         
         game_history.append((state_to_tensor(state).to(cpu_device), probs, state.current_turn))
         
@@ -134,7 +139,7 @@ def self_play_game_batched(worker_id, num_simulations, batch_size,
     def eval_fn_batched(states_vector):
         """Python callback passed to C++ batched MCTS."""
         if not states_vector:
-            return [], []
+            return np.zeros((0, 4840), dtype=np.float32), np.zeros(0, dtype=np.float32)
         
         n_states = len(states_vector)
         
@@ -155,8 +160,8 @@ def self_play_game_batched(worker_id, num_simulations, batch_size,
                 rid, n_out = response_queue.get(timeout=30)
             except Exception as e:
                 print(f"[Worker {worker_id}] Inference response timeout/error: {e}")
-                fallback_p = [([1.0/4840]*4840) for _ in states_vector]
-                fallback_v = [0.0] * len(states_vector)
+                fallback_p = np.full((n_states, 4840), 1.0 / 4840.0, dtype=np.float32)
+                fallback_v = np.zeros(n_states, dtype=np.float32)
                 return fallback_p, fallback_v
             
             # Read results from shared memory
@@ -178,8 +183,8 @@ def self_play_game_batched(worker_id, num_simulations, batch_size,
                 _, policies, values = response_queue.get(timeout=30)
             except Exception as e:
                 print(f"[Worker {worker_id}] Inference response timeout/error: {e}")
-                fallback_p = [([1.0/4840]*4840) for _ in states_vector]
-                fallback_v = [0.0] * len(states_vector)
+                fallback_p = np.full((n_states, 4840), 1.0 / 4840.0, dtype=np.float32)
+                fallback_v = np.zeros(n_states, dtype=np.float32)
                 return fallback_p, fallback_v
             
             if isinstance(policies, torch.Tensor):
@@ -187,31 +192,7 @@ def self_play_game_batched(worker_id, num_simulations, batch_size,
             if isinstance(values, torch.Tensor):
                 values = values.numpy()
         
-        # Apply legal masks and Dirichlet noise (root-only)
-        results_policies = []
-        results_values = []
-        is_root = (request_counter[0] == 1)
-        
-        for i, s in enumerate(states_vector):
-            mask = s.get_legal_moves_mask()
-            p = policies[i] * mask
-            
-            if is_root:
-                num_legal = int(mask.sum())
-                if num_legal > 0:
-                    noise = np.random.dirichlet([0.3] * num_legal)
-                    noise_full = np.zeros(4840, dtype=np.float32)
-                    noise_full[mask > 0] = noise
-                    p = 0.75 * p + 0.25 * noise_full
-            
-            p_sum = p.sum()
-            if p_sum > 0:
-                p /= p_sum
-            
-            results_policies.append(p.tolist())
-            results_values.append(float(values[i]))
-        
-        return results_policies, results_values
+        return policies, values
     
     # C++ batched search still calls eval_fn for root evaluation,
     # so we provide a wrapper that calls the batched callback with a single state.
@@ -219,17 +200,24 @@ def self_play_game_batched(worker_id, num_simulations, batch_size,
         policies, values = eval_fn_batched([state_to_eval])
         return policies[0], values[0]
     
-    # Create MCTS with both callbacks
+    # Create MCTS with both callbacks and Dirichlet noise settings enabled
     mcts = engine.MCTS(
         eval_fn=eval_fn_single,
         eval_fn_batched=eval_fn_batched,
-        c_puct=1.4
+        c_puct=1.4,
+        dirichlet_alpha=0.3,
+        dirichlet_epsilon=0.25
     )
     
     while state.winner == engine.Player.NONE:
         # Run C++ batched MCTS
         probs_list = mcts.search(state, num_simulations, batch_size)
-        probs = np.array(probs_list)
+        probs = np.array(probs_list, dtype=np.float64)
+        probs_sum = probs.sum()
+        if probs_sum > 0:
+            probs /= probs_sum
+        else:
+            probs = np.full(len(probs), 1.0 / len(probs))
         
         # Store state, probs on CPU for the replay buffer
         game_history.append((state_to_tensor(state).to(cpu_device), probs, state.current_turn))

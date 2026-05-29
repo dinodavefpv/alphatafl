@@ -450,14 +450,14 @@ TEST(MctsTest, SingleLeafSearch) {
     GameState state;
 
     // Simple eval function: uniform over legal moves
-    MCTS::EvalFn eval = [](const GameState& s) -> std::pair<std::vector<double>, double> {
+    MCTS::EvalFn eval = [](const GameState& s) -> std::pair<std::vector<float>, float> {
         auto legal = s.get_legal_moves();
-        std::vector<double> probs(121 * 40, 0.0);
+        std::vector<float> probs(121 * 40, 0.0f);
         for (const auto& m : legal) {
             int idx = get_action_index(m.from_row, m.from_col, m.to_row, m.to_col);
-            probs[idx] = 1.0 / legal.size();
+            probs[idx] = 1.0f / legal.size();
         }
-        return {probs, 0.0};
+        return {probs, 0.0f};
     };
 
     MCTS mcts(eval, 1.4);
@@ -465,43 +465,45 @@ TEST(MctsTest, SingleLeafSearch) {
 
     // Check sum ≈ 1.0
     double sum = 0.0;
-    for (double p : result) sum += p;
+    for (float p : result) sum += p;
     EXPECT_NEAR(sum, 1.0, 1e-6);
 
     // All non-zero probs should correspond to legal moves
     auto legal = state.get_legal_moves();
     for (const auto& m : legal) {
         int idx = get_action_index(m.from_row, m.from_col, m.to_row, m.to_col);
-        EXPECT_GE(result[idx], 0.0);
+        EXPECT_GE(result[idx], 0.0f);
     }
 }
 
 TEST(MctsTest, BatchedSearch) {
     GameState state;
 
-    MCTS::EvalFn eval = [](const GameState& s) -> std::pair<std::vector<double>, double> {
+    MCTS::EvalFn eval = [](const GameState& s) -> std::pair<std::vector<float>, float> {
         auto legal = s.get_legal_moves();
-        std::vector<double> probs(121 * 40, 0.0);
+        std::vector<float> probs(121 * 40, 0.0f);
         for (const auto& m : legal) {
             int idx = get_action_index(m.from_row, m.from_col, m.to_row, m.to_col);
-            probs[idx] = 1.0 / legal.size();
+            probs[idx] = 1.0f / legal.size();
         }
-        return {probs, 0.0};
+        return {probs, 0.0f};
     };
 
     MCTS::EvalFnBatched beval = [](const std::vector<GameState>& states)
-        -> std::pair<std::vector<std::vector<double>>, std::vector<double>> {
-        std::vector<std::vector<double>> policies;
-        std::vector<double> values;
+        -> std::pair<std::vector<float>, std::vector<float>> {
+        std::vector<float> policies;
+        std::vector<float> values;
+        policies.reserve(states.size() * 121 * 40);
+        values.reserve(states.size());
         for (const auto& s : states) {
             auto legal = s.get_legal_moves();
-            std::vector<double> probs(121 * 40, 0.0);
+            std::vector<float> probs(121 * 40, 0.0f);
             for (const auto& m : legal) {
                 int idx = get_action_index(m.from_row, m.from_col, m.to_row, m.to_col);
-                probs[idx] = 1.0 / legal.size();
+                probs[idx] = 1.0f / legal.size();
             }
-            policies.push_back(probs);
-            values.push_back(0.0);
+            policies.insert(policies.end(), probs.begin(), probs.end());
+            values.push_back(0.0f);
         }
         return {policies, values};
     };
@@ -511,20 +513,20 @@ TEST(MctsTest, BatchedSearch) {
     // Batch of 1 should fallback
     auto r1 = mcts.search(state, 10, 0);
     double sum1 = 0.0;
-    for (double p : r1) sum1 += p;
+    for (float p : r1) sum1 += p;
     EXPECT_NEAR(sum1, 1.0, 1e-6);
 
     // Proper batch
     auto r2 = mcts.search(state, 20, 8);
     double sum2 = 0.0;
-    for (double p : r2) sum2 += p;
+    for (float p : r2) sum2 += p;
     EXPECT_NEAR(sum2, 1.0, 1e-6);
 
     // Backward compat: single-leaf still works
     MCTS mcts2(eval, 1.4);
     auto r3 = mcts2.search(state, 20);
     double sum3 = 0.0;
-    for (double p : r3) sum3 += p;
+    for (float p : r3) sum3 += p;
     EXPECT_NEAR(sum3, 1.0, 1e-6);
 }
 
@@ -536,8 +538,8 @@ TEST(MctsTest, TerminalState) {
     state.apply_move({0, 1, 0, 0}); // King escapes
     EXPECT_EQ(state.winner, Player::DEFENDER);
 
-    MCTS::EvalFn eval = [](const GameState& s) -> std::pair<std::vector<double>, double> {
-        return {std::vector<double>(121 * 40, 0.0), 0.0};
+    MCTS::EvalFn eval = [](const GameState& s) -> std::pair<std::vector<float>, float> {
+        return {std::vector<float>(121 * 40, 0.0f), 0.0f};
     };
 
     MCTS mcts(eval, 1.4);
@@ -545,7 +547,7 @@ TEST(MctsTest, TerminalState) {
 
     // All probs should be 0 (no legal moves)
     double sum = 0.0;
-    for (double p : result) sum += p;
+    for (float p : result) sum += p;
     EXPECT_EQ(sum, 0.0);
 }
 

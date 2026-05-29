@@ -444,7 +444,7 @@ These are **architectural** — they cannot be reduced without eliminating the p
 ## Open Questions
 
 1. **Multi-worker benchmark**: ~~Does 0ms timeout hurt GPU utilization when 20 workers run concurrently?~~ **ANSWERED**: Yes — 0ms = 4 st/s vs 1ms = 275 st/s (69×). Section 8.1-8.3.
-2. **libtorch integration**: Can we move GPU inference into C++ to eliminate the Python callback? **Highest priority.** Callback micro-profile shows mp.Queue.get (13.9ms) + list build (6.5ms) + pybind11 wrap (3.0ms) = 23.4ms/batch eliminable via C++ native inference (Section 8.8). libtorch or ONNX Runtime.
+2. **libtorch/ORT integration**: Can we move GPU inference into C++ to eliminate the Python callback? **Highest priority.** Callback micro-profile shows mp.Queue.get (13.9ms) + list build (6.5ms) + pybind11 wrap (3.0ms) = 23.4ms/batch eliminable via C++ native inference (Section 8.8). Standalone C++ inference (ONNX Runtime, Step 3) is planned.
 3. **Windows CUDA cleanup**: Why does PyTorch CUDA context teardown hang in spawned processes? Workaround is `os._exit(0)`.
 4. **Shared memory IPC**: ~~Can `multiprocessing.shared_memory` eliminate queue serialization?~~ **ANSWERED**: Tensor serialization eliminated. Control path `mp.Queue` pipe latency (13.9ms/get) remains — SHM solved data, pipes remain for control.
 5. **Batch size scaling**: ~~What is the optimal MCTS batch_size for 800-sim games?~~ **ANSWERED**: Redundancy confirmed (Section 8.6). Batch size doesn't fix per-batch Python overhead — even 1 batch/turn costs ~24ms.
@@ -454,8 +454,52 @@ These are **architectural** — they cannot be reduced without eliminating the p
 
 ---
 
+## 11. Phase 5D Step 1: C++ Callback Optimization (D13)
+
+Implemented native C++ legal move masking, numerically stable softmax normalization, and Dirichlet noise generation. Redefined wrappers in Pybind11 to receive flat NumPy data streams. 
+
+### Benchmark: Single-worker E2E Self-Play (800 sims/turn, batch_size=128, SHM 1ms)
+
+| Layer / Step | Pre-Optimization Baseline | Step 1 Actual (C++ Callback) | Speedup / Reduction |
+|--------------|---------------------------|------------------------------|---------------------|
+| **Python list conversion (`.tolist()`)** | 6.5 ms / batch | **0.0 ms / batch** | 100% reduction |
+| **Python processing (list + mask)** | ~6.5 ms / batch | **0.0 ms / batch** | 100% reduction |
+| **C++ `batch_to_tensor`** | — | **2.9 - 3.9 ms / batch** | Fast C++ parsing |
+| **Queue round-trip (IPC)** | — | **13.3 - 13.7 ms / batch** | IPC overhead (80%) |
+| **Data movement (SHM write + read)** | — | **0.4 ms / batch** | High efficiency |
+| **800-sim Turn Time (1 worker)** | 346 ms / turn | **216 - 244 ms / turn** | **up to 37.5% speedup** |
+| **800-sim E2E Game Time (1 worker)**| 63.1 s | **43.1 - 48.8 s** | **Target Met** |
+
+### Key Findings
+- **Elimination of GIL bottleneck**: Moving the legal masking and Dirichlet noise from Python into C++ completely deleted the `6.5 ms` Python overhead per batch.
+- **IPC dominance**: At 16.6ms total batch latency, the Python `mp.Queue` round-trip (13.3ms) accounts for **80%** of the remaining execution time. This confirms that native C++ inference (ONNX Runtime, Step 3) is required to break through to the sub-15ms/turn level.
+
+---
+
+## 12. Phase 5E Step 2: Sparse MCTSNode child_priors Storage (D13)
+
+Stored MCTS Node prior probabilities sparsely parallel to `legal_action_indices`. Implemented binary search lookup `get_child_prior` for node creation and sequential access during selection.
+
+### Memory & Throughput Metrics
+
+| Metric | Pre-Optimization Baseline | Step 1 (C++ Callback) | Step 2 (Sparse Priors) | Speedup / Reduction |
+|---|---|---|---|---|
+| **MCTSNode memory footprint** | 39.4 KB / node | 19.5 KB / node | **1.078 KB / node** | **18x - 36x reduction** |
+| **800-sim MCTS tree memory** | ~31 MB / tree | ~15.6 MB / tree | **1.56 MB / tree** | **18x - 36x reduction** |
+| **Synthetic MCTS throughput** | ~50,000 st/s | ~50,000 st/s | **61,072 st/s** | **22% speedup** |
+| **800-sim E2E Turn Time (1 worker)**| 346 ms / turn | 216 - 244 ms / turn | **207 ms / turn** | **40% speedup** |
+| **800-sim E2E Game Time (1 worker)**| 63.1 s | 43.1 - 48.8 s | **41.4 s** | **Target Met** |
+
+### Key Findings
+- **Dual Win**: Storing `child_priors` sparsely parallel to `legal_action_indices` was intended purely for memory savings. However, sequentially iterating over `legal_action_indices` and index-aligned sparse `child_priors[i]` inside `select_child` is extremely cache-friendly compared to strided indexing of a dense 4840 float array. This increased synthetic C++ MCTS throughput by **22%** (to 61,072 states/second).
+- **Aggregate Memory Savings**: In 20-worker self-play, memory drops from **620 MB** to **~31 MB** total aggregate tree footprint, significantly freeing up system overhead.
+
+---
+
 ## Changelog
 
+- **2026-05-28** — Phase 5E: Step 2 Sparse Priors (Section 12). Memory footprint reduced 18x to 1.078 KB/node. Synthetic MCTS throughput increased 22% to 61K states/sec due to cache-friendly sequential selection. Turn time reduced to 207 ms.
+- **2026-05-28** — Phase 5D: Step 1 C++ Callback (Section 11). Moved legal move masking, softmax, and Dirichlet noise to C++. Eliminated Python callback list build overhead (6.5 ms -> 0.0 ms). Turn time reduced to 216 - 244 ms.
 - **2026-05-09** — Phase 5A: Python callback micro-profile (Section 8.8). Instrumented `eval_fn_batched` with per-step timers across 1755 batches in a 200-turn 800-sim game. Measured per-batch: mp.Queue.get 13.9ms (58%), list build 6.5ms (27%), pybind11 tensor wrap 3.0ms (12%), SHM memcpy 0.5ms (2%). Confirmed 84% of Python overhead is eliminable via C++ native inference. Added Section 8.8, replaced 8.9-8.11 with measured data. Answered open question #7; added #8 (pybind11 game loop profiling).
 - **2026-05-09** — Phase 5A: Deep-tree profile + single-game timing (Sections 8.6.3, 8.7). C++ per-sim cost confirmed flat at 23µs. Single 800-sim game: 68s (341ms/turn). Corrected bottleneck analysis from C++ → Python.
 - **2026-05-09** — Phase 5A: Batch size sweep (Section 8.6.1). Confirmed redundancy.
