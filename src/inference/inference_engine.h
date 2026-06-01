@@ -2,15 +2,15 @@
 
 #include <string>
 #include <vector>
-#include <torch/script.h>
+#include <memory>
+#include "onnxruntime_cxx_api.h"
 #include "game_state.h"
 
 namespace alphatafl {
 
 /**
- * Native C++ inference engine using TorchScript.
- * Eliminates Python mp.Queue round-trips by running GPU inference
- * directly inside the C++ extension.
+ * Native C++ inference engine using stand-alone ONNX Runtime.
+ * Eliminates PyTorch/LibTorch dependency and runs CUDA or CPU inference.
  */
 class InferenceEngine {
 public:
@@ -30,9 +30,10 @@ public:
     evaluate_single(const GameState& state);
 
 private:
-    torch::jit::script::Module model_;
-    torch::Device device_;
+    Ort::Env env_;
+    std::unique_ptr<Ort::Session> session_;
     bool initialized_;
+    std::string device_;
 };
 
 } // namespace alphatafl

@@ -12,7 +12,7 @@ import alphatafl_engine as engine
 
 def test_cpp_inference():
     print("Loading C++ inference engine...")
-    inf = engine.InferenceEngine("models/alphatafl_scripted.pt", "cuda")
+    inf = engine.InferenceEngine("models/alphatafl.onnx", "cuda")
 
     print("Creating test states...")
     states = [engine.GameState() for _ in range(4)]

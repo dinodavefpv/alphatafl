@@ -4,7 +4,7 @@ import alphatafl_engine as engine
 
 # Try CPU first
 print("Testing CPU inference...")
-inf_cpu = engine.InferenceEngine("models/alphatafl_scripted.pt", "cpu")
+inf_cpu = engine.InferenceEngine("models/alphatafl.onnx", "cpu")
 states = [engine.GameState() for _ in range(64)]
 import time
 t0 = time.time()
@@ -15,7 +15,7 @@ print(f"CPU batch: {(t1-t0)*1000:.2f}ms")
 # Try CUDA
 print("\nTesting CUDA inference...")
 try:
-    inf_cuda = engine.InferenceEngine("models/alphatafl_scripted.pt", "cuda")
+    inf_cuda = engine.InferenceEngine("models/alphatafl.onnx", "cuda")
     t0 = time.time()
     inf_cuda.evaluate(states)
     t1 = time.time()

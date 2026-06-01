@@ -10,7 +10,7 @@ sys.path.insert(0, 'build/Release')
 import alphatafl_engine as engine
 
 print("Loading C++ inference engine...")
-inf = engine.InferenceEngine("models/alphatafl_scripted.pt", "cuda")
+inf = engine.InferenceEngine("models/alphatafl.onnx", "cuda")
 
 states = [engine.GameState() for _ in range(64)]
 

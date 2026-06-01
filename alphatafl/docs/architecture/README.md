@@ -21,9 +21,9 @@ The system is a hybrid application combining C++ for performance-critical simula
         *   **Policy Head**: Predicts the probability distribution over 4840 moves.
         *   **Value Head**: Predicts the expected game outcome from the current state.
 
-3.  **Inference Server (`src/training/inference_server.py`, v1)**:
-    *   Single GPU process that batches leaf states from workers, runs `model.forward()`, and routes results via per-worker `response_queues`.
-    *   Supports hot-reload (watching `current_best.pt` mtime) and optional `torch.compile`.
+3.  **Inference Server (`src/training/inference_server.py`, v1) & C++ ONNX Backend**:
+    *   **Inference Server**: Single GPU process that batches leaf states from workers, runs `model.forward()`, and routes results via per-worker `response_queues`. Supports hot-reload and optional `torch.compile`.
+    *   **C++ ONNX Inference**: In-process inference engine (`InferenceEngine`) running ONNX Runtime on CUDA directly inside worker threads. Eliminates background server processes and IPC queue overhead for single-worker or low-worker workloads.
 
 4.  **Training Loop (`src/training/`)**:
     *   **Self-Play**: Workers (CPU-only) run C++ MCTS and stream game data via `replay_queue`.
@@ -44,6 +44,10 @@ The system is a hybrid application combining C++ for performance-critical simula
 4. **Replay Buffer**: Completed game data is pushed to `replay_queue` (maxsize=50000). Trainer background receiver thread appends to in-memory deque.
 5. **Training**: `DataLoader` samples batches of 128 from the deque. Adam optimizer updates network weights on GPU.
 6. **Checkpointing**: Every 500 batches, model is saved asynchronously (CPU-cloned state dict, background thread). Inference Server detects the mtime change and hot-reloads.
+
+> [!NOTE]
+> **Standalone C++ ONNX Inference Mode (Phase 5F / Step 3)**:
+> Alternatively, MCTS directly calls the compiled C++ `InferenceEngine` using ONNX Runtime on CUDA. This bypasses the Python Inference Server, `mp.Queue`, and Shared Memory (SHM) entirely. Evaluations run synchronously in-thread, achieving highly stable, GIL-free execution and 81K states/sec synthetic throughput.
 
 ## Hardware
 

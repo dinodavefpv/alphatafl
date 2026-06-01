@@ -153,7 +153,7 @@ Move GPU inference into the C++ extension to eliminate Python `mp.Queue` round-t
 | **Immediate** | Set `ALPHATAFL_INFERENCE_TIMEOUT_MS=1` + `ALPHATAFL_SHM=1` | **2-4x** | **Implemented** (5A) |
 | **P1** | Move masking/noise into C++ eval callback | **3-5x** (GIL bypass) | **Completed** (5D/Step 1) |
 | **P2** | Sparse child_priors storage (18x mem/node) | Memory only | **Completed** (5E/Step 2) |
-| Medium-term | ONNX Runtime / TensorRT inference | **5-20x** | Planned (Step 3) |
+| **P3** | ONNX Runtime / TensorRT inference | **5-20x** (Queue-free) | **Completed** (5F/Step 3) |
 | Platform | Re-test on Linux where `fork` + native Triton work | Potentially large | Planned |
 
 ### D12 Update: 1ms Timeout Is the Single Biggest Lever
@@ -184,4 +184,29 @@ Multi-worker throughput benchmark (50 sims/turn, batch_size=16, 30s window):
 
 ---
 
-*Last updated: 2026-05-28*
+## Phase 5F: Step 3 ONNX Runtime Standalone C++ Inference
+
+### What Changed
+
+- **ONNX Model Export**: Created a patched export script (`scripts/export_onnx.py`) that exports the ResNet policy and value heads using a static-flatten structure (`p.flatten(1)`) to avoid dynamic batch size Div-by-N reshape errors under modern PyTorch.
+- **ORT C++ Integration**: Completely removed the PyTorch/LibTorch headers and library dependencies from CMakeLists.txt and linked the C++ core engine against the standalone **ONNX Runtime** Windows x64 DLLs.
+- **In-process Native Inference**: Modified `InferenceEngine::evaluate()` to invoke `Ort::Session::Run` inside the search execution thread, bypassing the Python boundary, multiprocessing, and shared memory mapping during simulations.
+- **Robust CUDA fallback**: Configured the ORT session with CUDA Execution Provider and automatic try-catch fallback to CPU execution provider in case of runtime mismatch.
+
+### Files Modified
+
+- `CMakeLists.txt`
+- `src/inference/inference_engine.h`
+- `src/inference/inference_engine.cpp`
+- `scripts/export_onnx.py`
+- `test_cpp_inference.py`
+
+### Test & Benchmark Results
+
+- **Model Parity**: Verified that output predictions align precisely with PyTorch Python results (max policy diff **1.21e-08**, value diff **4.40e-07**).
+- **Synthetic Throughput**: C++ MCTS throughput rose to **81,439 states/second** (a **62% increase** compared to pre-optimization).
+- **Self-Play Turn Time**: Average turn time is **245.5 ms / turn** synchronously on CUDA in a single process, totally eliminating IPC management, queues, and locks.
+
+---
+
+*Last updated: 2026-05-31*

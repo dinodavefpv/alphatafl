@@ -12,7 +12,7 @@ import alphatafl_engine as engine
 import torch
 
 print("Loading C++ inference engine...")
-inf = engine.InferenceEngine("models/alphatafl_scripted.pt", "cuda")
+inf = engine.InferenceEngine("models/alphatafl.onnx", "cuda")
 
 # Create states once
 states = [engine.GameState() for _ in range(64)]

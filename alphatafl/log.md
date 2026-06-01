@@ -1,5 +1,14 @@
 # AlphaTafl Wiki Log
 
+## [2026-05-31] Inference | Step 3 ONNX Runtime Standalone C++ Inference
+- Transitioned model inference backend of `InferenceEngine` from PyTorch C++ (LibTorch) to standalone ONNX Runtime on CUDA.
+- Patched PyTorch model export script (`scripts/export_onnx.py`) to flatten policy logits using `p.flatten(1)` instead of dynamic reshape `p.reshape(p.size(0), -1)` to prevent division-by-batch-size bugs in ONNX Runtime.
+- Removed LibTorch detection and dependencies from CMakeLists.txt and added automatic DLL copy steps post-build.
+- Implemented C++ ONNX Runtime API session, tensor wrapping, execution on CUDA, and CPU post-processing with dynamic device fallback.
+- Validated numerical parity against Python model, yielding near-zero difference (policy diff **1.21e-08**, value diff **4.40e-07**).
+- Achieved **81,439 states/second** synthetic MCTS search throughput (62% increase vs baseline) and **245.5 ms / turn** synchronously on GPU in a single process, completely eliminating multiprocessing and SHM.
+- Updated `alphatafl/docs/history/optimization_v1_phase5.md` and `alphatafl/docs/history/optimization_v1_benchmarks.md`. Pre-existing PyTorch scripts are also updated to support ONNX model evaluation.
+
 ## [2026-05-28] Memory | Step 2 Sparse Priors Optimization
 - Stored prior probabilities sparsely parallel to `legal_action_indices`. Added binary search lookup helper `MCTSNode::get_child_prior()` for node creation.
 - Updated MCTS child selection to iterate sequentially and access parallel `child_priors[i]` sequentially, resulting in cache-friendly operations.

@@ -21,7 +21,7 @@ sys.path.insert(0, r"{PROJECT_ROOT}")
 
 import alphatafl_engine as engine
 
-inf = engine.InferenceEngine("models/alphatafl_scripted.pt", "cuda")
+inf = engine.InferenceEngine("models/alphatafl.onnx", "cuda")
 
 # Warmup
 states = [engine.GameState() for _ in range(64)]
@@ -128,7 +128,7 @@ sys.path.insert(0, r"{PROJECT_ROOT}")
 
 import alphatafl_engine as engine
 
-inf = engine.InferenceEngine("models/alphatafl_scripted.pt", "cuda")
+inf = engine.InferenceEngine("models/alphatafl.onnx", "cuda")
 
 state = engine.GameState()
 game_history = []
@@ -188,7 +188,7 @@ sys.path.insert(0, r"{PROJECT_ROOT}")
 import alphatafl_engine as engine
 import numpy as np
 
-inf = engine.InferenceEngine("models/alphatafl_scripted.pt", "cuda")
+inf = engine.InferenceEngine("models/alphatafl.onnx", "cuda")
 
 state = engine.GameState()
 mcts = engine.MCTS(
