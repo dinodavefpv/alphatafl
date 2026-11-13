@@ -88,14 +88,19 @@ def inference_server_main(inference_queue, response_queues, model_path, stop_eve
     use_shm = os.environ.get("ALPHATAFL_SHM", "0") == "1"
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = AlphaTaflNet().to(device).eval()
+    # Weights are always loaded into base_model. When torch.compile is on, `model`
+    # is a wrapper whose state_dict keys carry an "_orig_mod." prefix, so loading a
+    # plain checkpoint into the wrapper would fail; the wrapper shares base_model's
+    # parameters, so loading into base_model updates both.
+    base_model = AlphaTaflNet().to(device).eval()
+    model = base_model
     torch.set_grad_enabled(False)
 
     last_mtime = 0
     if os.path.exists(model_path):
         last_mtime = os.path.getmtime(model_path)
         try:
-            model.load_state_dict(torch.load(model_path, map_location=device))
+            base_model.load_state_dict(torch.load(model_path, map_location=device))
             print(f"[InferenceServer] Loaded model from {model_path} on {device}")
         except Exception as e:
             print(f"[InferenceServer] Warning: could not load model: {e}")
@@ -106,7 +111,7 @@ def inference_server_main(inference_queue, response_queues, model_path, stop_eve
     use_compile = os.environ.get("ALPHATAFL_COMPILE", "0") == "1"
     if use_compile and hasattr(torch, 'compile'):
         try:
-            model = torch.compile(model, mode="reduce-overhead")
+            model = torch.compile(base_model, mode="reduce-overhead")
             print("[InferenceServer] torch.compile enabled (reduce-overhead)")
         except Exception as e:
             print(f"[InferenceServer] torch.compile failed: {e}")
@@ -180,7 +185,7 @@ def inference_server_main(inference_queue, response_queues, model_path, stop_eve
             current_mtime = os.path.getmtime(model_path)
             if current_mtime != last_mtime:
                 try:
-                    model.load_state_dict(torch.load(model_path, map_location=device))
+                    base_model.load_state_dict(torch.load(model_path, map_location=device))
                     last_mtime = current_mtime
                     print(f"[InferenceServer] Hot-reloaded model from {model_path}")
                 except Exception as e:

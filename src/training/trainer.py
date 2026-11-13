@@ -12,6 +12,7 @@ import time
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from src.model.network import AlphaTaflNet
 from src.training.replay_buffer import ReplayBuffer
+from src.training.checkpoint import atomic_save, backup_unloadable
 
 class ReplayDataset(torch.utils.data.Dataset):
     """PyTorch Dataset wrapper for the in-memory replay buffer."""
@@ -30,16 +31,28 @@ class Trainer:
         self.device = device if device else ("cuda" if torch.cuda.is_available() else "cpu")
         self.model = AlphaTaflNet().to(self.device)
         self.model_path = model_path
-        
+
+        # Checkpoint write ordering (see save_model)
+        self._seq_lock = threading.Lock()    # guards _save_seq
+        self._save_lock = threading.Lock()   # serializes checkpoint writes
+        self._save_seq = 0
+        self._saved_seq = 0
+
         if os.path.exists(model_path):
             try:
-                self.model.load_state_dict(torch.load(model_path, map_location=self.device))
+                state_dict = self._load_with_retry(model_path)
+                self.model.load_state_dict(state_dict)
                 print(f"Loaded existing model from {model_path} onto {self.device}")
-            except RuntimeError as e:
-                print(f"Warning: Could not load existing model from {model_path}. It may be from an older architecture version.")
-                print(f"Error details: {e}")
-                print(f"Initializing a fresh model instead. You may want to delete the old models/ and data/ directories.")
-                self.save_model()
+            except OSError:
+                # Persistent I/O failure (e.g. file locked): never treat as corrupt.
+                raise
+            except Exception as e:
+                # Corrupt file or incompatible architecture: keep the old file
+                # as a backup rather than overwriting it with random weights.
+                backup = backup_unloadable(model_path)
+                print(f"Warning: Could not load existing model from {model_path}: {e}")
+                print(f"Moved it to {backup} and initialized a fresh model.")
+                self.save_model(sync=True)
         else:
             print(f"Initialized new model on {self.device}")
             self.save_model()
@@ -162,24 +175,45 @@ class Trainer:
         }
         
     def save_model(self, sync=False):
-        """Save model. If sync=False, saves asynchronously in background thread."""
-        if not os.path.exists("models"):
-            os.makedirs("models")
-        
+        """Save model atomically. If sync=False, saves in a background thread."""
         # Clone state dict to CPU to avoid corrupting GPU tensors during concurrent training
         state_dict = {k: v.cpu().clone() for k, v in self.model.state_dict().items()}
-        
+
+        with self._seq_lock:
+            self._save_seq += 1
+            seq = self._save_seq
+
+        def _save():
+            # Serialize writers and drop a save that a newer one already superseded,
+            # so an older snapshot can never land on top of a newer one.
+            with self._save_lock:
+                if seq < self._saved_seq:
+                    return
+                atomic_save(state_dict, self.model_path)
+                self._saved_seq = seq
+
         if sync:
-            torch.save(state_dict, self.model_path)
+            _save()
         else:
             # Async save: training continues immediately
-            def _save():
+            def _save_async():
                 try:
-                    torch.save(state_dict, self.model_path)
+                    _save()
                 except Exception as e:
                     print(f"[Trainer] Async save failed: {e}")
-            threading.Thread(target=_save, daemon=True).start()
-        
+            threading.Thread(target=_save_async, daemon=True).start()
+
+    @staticmethod
+    def _load_with_retry(path, retries=5, retry_delay=0.1):
+        """torch.load with a short retry on transient I/O errors (e.g. a locked file)."""
+        for attempt in range(retries):
+            try:
+                return torch.load(path, map_location="cpu")
+            except OSError:
+                if attempt == retries - 1:
+                    raise
+                time.sleep(retry_delay * (attempt + 1))
+
     def maybe_checkpoint(self, batch_count):
         """Check if we should save a checkpoint based on batch count."""
         # Every 500 batches: current_best.pt
@@ -192,7 +226,7 @@ class Trainer:
                 state_dict = {k: v.cpu().clone() for k, v in self.model.state_dict().items()}
                 def _save_version():
                     try:
-                        torch.save(state_dict, version_path)
+                        atomic_save(state_dict, version_path)
                         print(f"[Trainer] Saved versioned checkpoint to {version_path}")
                     except Exception as e:
                         print(f"[Trainer] Versioned save failed: {e}")

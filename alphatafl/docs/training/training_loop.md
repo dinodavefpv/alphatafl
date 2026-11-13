@@ -32,6 +32,9 @@ $L = (z - v)^2 - \pi \log p$
 ## Checkpointing (K5)
 
 - **Async save**: `save_model(sync=False)` clones state dict to CPU (`{k: v.cpu().clone() for k, v ...}`) and saves in a background thread. Training continues without stalls on GPU tensors.
+- **Atomic writes**: every checkpoint (`current_best.pt` and versioned files) is written via `atomic_save()` in `src/training/checkpoint.py`: `torch.save` to a unique `<path>.<pid>.<thread>.tmp`, then `os.replace` onto the target, retried with backoff on `PermissionError` (Windows refuses the swap while a reader has the file open). Readers such as the inference server never see a partial file.
+- **Write ordering**: each `save_model()` call takes a sequence number; writes are serialized by `_save_lock` and a save whose snapshot is older than the last one written is dropped, so an older snapshot can never land on top of a newer one.
+- **Unloadable checkpoint on init**: if `current_best.pt` exists but cannot be loaded (corrupt file or incompatible architecture), `backup_unloadable()` moves it to `current_best.unloadable_<timestamp>.pt` before a fresh model is saved. Transient I/O errors (`OSError`) are retried and then raised — never treated as corruption.
 - **Checkpoint frequency**: `current_best.pt` every 500 training batches, versioned `alphatafl_vXXXXX.pt` every 5000 batches.
 - Versioned checkpoint numbering scans existing files on init to resume correctly.
 - Training loss is printed every 1000 batches (in the CLI training loop).

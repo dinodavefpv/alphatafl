@@ -1,5 +1,13 @@
 # AlphaTafl Wiki Log
 
+## [2026-11-12] Fix | Checkpoint handling (atomic writes, safe init, compiled hot-reload)
+
+- **Hot-reload under `ALPHATAFL_COMPILE=1`**: loading a plain state dict into the `torch.compile` wrapper fails (`Missing key(s)... "_orig_mod.*"`, verified), so the server silently kept stale weights. `inference_server_main` now keeps `base_model` and loads into it; the wrapper shares its parameters.
+- **Non-atomic saves**: added `src/training/checkpoint.py` with `atomic_save()` (temp file + `os.replace`, retried on Windows `PermissionError`). Trainer `save_model()` and versioned checkpoints use it. Async saves now carry a sequence number and are serialized so an older snapshot cannot overwrite a newer one.
+- **Trainer overwrote `current_best.pt` on any load error**: it now moves an unloadable file to `current_best.unloadable_<timestamp>.pt` via `backup_unloadable()` before writing a fresh model; `OSError` is retried and raised instead.
+- **Tests**: `tests/python/test_checkpoint.py` (10 tests). Full Python suite: 72 passed, 2 skipped, 1 failed (`test_async_checkpoint_cpu_clone` under full-suite load; passes alone and in 3 consecutive runs of `test_phase3.py`).
+- **Docs**: `docs/training/training_loop.md`, `docs/training/inference_server.md`, `docs/architecture/README.md`. The architecture note also no longer claims MCTS calls the C++ `InferenceEngine` directly — it is bound but not wired into self-play.
+
 ## [2026-11-12] Fix | History ring buffer restored on undo
 
 - **Bug:** `GameState::apply_move_inplace` overwrote a slot of the 4-slot `board_history_` ring buffer, and `undo_move` only rewound `history_write_idx_` without restoring the old contents. Any MCTS traversal two or more plies deep therefore clobbered the root's T-1..T-3 boards, so later leaves were evaluated with wrong history planes (channels 3–11) — a train/inference mismatch, since training tensors come from the real, never-undone game state.

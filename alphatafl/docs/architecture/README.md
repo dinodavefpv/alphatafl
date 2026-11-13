@@ -43,11 +43,11 @@ The system is a hybrid application combining C++ for performance-critical simula
 3. **Worker-Side Pre-Processing**: Workers obtain the legal-move mask from `GameState::get_legal_moves_mask()` and return both the raw softmaxed policy and the mask to C++ MCTS. The actual legal-move masking, softmax renormalization, and root-only Dirichlet mixing happen **inside the C++ `MCTSNode::expand` callback** (Phase 5D) — see `docs/api/interface_contract.md` §7. The C++ `MCTS` constructor is initialized with `dirichlet_alpha=0.3, dirichlet_epsilon=0.25` from `self_play_game_batched`, so the noise is generated in C++ and never crosses the Python boundary on the hot path.
 4. **Replay Buffer**: Completed game data is pushed to `replay_queue` (maxsize=50000). Trainer background receiver thread appends to in-memory deque.
 5. **Training**: `DataLoader` samples batches of 128 from the deque. Adam optimizer updates network weights on GPU.
-6. **Checkpointing**: Every 500 batches, model is saved asynchronously (CPU-cloned state dict, background thread). Inference Server detects the mtime change and hot-reloads.
+6. **Checkpointing**: Every 500 batches, model is saved asynchronously (CPU-cloned state dict, background thread) with an atomic temp-file + `os.replace` write. Inference Server detects the mtime change and hot-reloads.
 
 > [!NOTE]
 > **Standalone C++ ONNX Inference Mode (Phase 5F / Step 3)**:
-> Alternatively, MCTS directly calls the compiled C++ `InferenceEngine` using ONNX Runtime on CUDA. This bypasses the Python Inference Server, `mp.Queue`, and Shared Memory (SHM) entirely. Evaluations run synchronously in-thread, achieving highly stable, GIL-free execution and 81K states/sec synthetic throughput.
+> A C++ `InferenceEngine` (ONNX Runtime on CUDA, reading `models/alphatafl.onnx`) is built and bound to Python, reaching 81K states/sec in synthetic benchmarks. It is not wired into the self-play pipeline: `self_play_game_batched` still evaluates through the Python Inference Server, and the ONNX file is only refreshed by running `scripts/export_onnx.py` manually.
 
 ## Hardware
 

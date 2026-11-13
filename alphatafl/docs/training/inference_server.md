@@ -32,11 +32,11 @@ The server runs as a `multiprocessing.Process` spawned by `cli.py`. It owns the 
 
 ### Hot-Reload (K5)
 
-Every 10 batches, the server checks `os.path.getmtime("models/current_best.pt")`. If modified, it calls `model.load_state_dict(torch.load(...))` to pick up new weights. Workers never touch model files.
+Every 10 batches, the server checks `os.path.getmtime("models/current_best.pt")`. If modified, it loads the new weights into `base_model` (the uncompiled `AlphaTaflNet`). When `torch.compile` is enabled, the compiled wrapper's `state_dict` keys carry an `_orig_mod.` prefix, so weights are never loaded into the wrapper; it shares `base_model`'s parameters (in-place copy), so the compiled model picks up the update. Checkpoints are written atomically by the trainer, so a reload never sees a partial file. Workers never touch model files.
 
 ### torch.compile (K8)
 
-When `ALPHATAFL_COMPILE=1` and PyTorch >= 2.0, the model is wrapped with `torch.compile(model, mode="reduce-overhead")`. Verified to produce outputs within 1e-5 of the uncompiled model.
+When `ALPHATAFL_COMPILE=1` and PyTorch >= 2.0, `base_model` is wrapped with `torch.compile(base_model, mode="reduce-overhead")` for the forward pass; hot-reload still targets `base_model`. Verified to produce outputs within 1e-5 of the uncompiled model.
 
 ## Lifecycle
 
