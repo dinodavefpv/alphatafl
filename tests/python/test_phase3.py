@@ -125,54 +125,50 @@ class TestK5HotReload:
                 proc.terminate()
                 proc.join(timeout=2)
 
-    def test_async_checkpoint_cpu_clone(self):
-        """Trainer saves from CPU-cloned state dict without stalls."""
-        trainer = Trainer(model_path="models/test_async.pt")
-        
+    def test_async_checkpoint_cpu_clone(self, tmp_path):
+        """Trainer saves from CPU-cloned state dict without blocking on the write."""
+        model_path = str(tmp_path / "test_async.pt")
+        trainer = Trainer(model_path=model_path)
+        os.remove(model_path)  # drop the file written by __init__
+
         # Simulate training
         trainer.train_step(batch_size=4)
-        
-        # Trigger async save
+
+        # Trigger async save: only the CPU clone is synchronous, the write is not.
+        # Generous bound so the test is not flaky when the full suite loads the machine.
         start = time.time()
         trainer.save_model(sync=False)
         elapsed = time.time() - start
-        
-        # Async save should return immediately (< 50ms)
-        assert elapsed < 0.05
-        
-        # Wait a bit for background thread to finish
-        time.sleep(0.5)
-        
-        # Verify file was saved and loads correctly
-        assert os.path.exists("models/test_async.pt")
-        loaded = torch.load("models/test_async.pt", map_location='cpu')
-        assert isinstance(loaded, dict)
-        
-        # Cleanup
-        if os.path.exists("models/test_async.pt"):
-            os.remove("models/test_async.pt")
+        assert elapsed < 0.5
 
-    def test_checkpoint_frequency(self):
-        """Verify checkpoint frequencies: current_best every 500, versioned every 5000."""
-        trainer = Trainer(model_path="models/test_freq.pt")
-        
-        # Test that maybe_checkpoint doesn't crash at various batch counts
+        # Wait for the background write to land
+        deadline = time.time() + 10
+        while trainer._saved_seq < trainer._save_seq and time.time() < deadline:
+            time.sleep(0.01)
+
+        assert os.path.exists(model_path)
+        loaded = torch.load(model_path, map_location='cpu')
+        assert isinstance(loaded, dict)
+
+    def test_checkpoint_frequency(self, tmp_path):
+        """current_best every 500 batches, versioned every 5000 - written next to model_path only."""
+        import glob
+        real_versions_before = sorted(glob.glob("models/alphatafl_v*.pt"))
+
+        trainer = Trainer(model_path=str(tmp_path / "test_freq.pt"))
         for batch_count in [499, 500, 999, 1000, 4999, 5000, 9999, 10000]:
             trainer.maybe_checkpoint(batch_count)
-        
-        # Wait for async saves to complete
-        time.sleep(1.0)
-        
-        # Cleanup
-        if os.path.exists("models/test_freq.pt"):
-            os.remove("models/test_freq.pt")
-        # Clean up any versioned checkpoints
-        import glob
-        for f in glob.glob("models/alphatafl_v*.pt"):
-            try:
-                os.remove(f)
-            except PermissionError:
-                pass  # Async save may still be writing
+
+        expected = {str(tmp_path / "alphatafl_v00001.pt"), str(tmp_path / "alphatafl_v00002.pt")}
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            if expected <= set(glob.glob(str(tmp_path / "alphatafl_v*.pt"))):
+                break
+            time.sleep(0.05)
+        assert set(glob.glob(str(tmp_path / "alphatafl_v*.pt"))) == expected
+
+        # The real models/ directory must be untouched
+        assert sorted(glob.glob("models/alphatafl_v*.pt")) == real_versions_before
 
 
 class TestK6AsyncGUI:

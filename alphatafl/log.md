@@ -1,5 +1,13 @@
 # AlphaTafl Wiki Log
 
+## [2026-11-13] Fix | Tests no longer delete real versioned checkpoints
+
+- **Bug:** `tests/python/test_phase3.py::test_checkpoint_frequency` cleaned up with `glob("models/alphatafl_v*.pt")` + `os.remove`, deleting the user's real versioned checkpoints. It also wrote `alphatafl_v00001/2.pt` into `models/`, because `Trainer` hardcoded `models/` for versioned checkpoints regardless of `model_path`.
+- **Fix:** `Trainer.checkpoint_dir` = directory of `model_path`; versioned writes and the resume scan use it (`src/training/trainer.py:36`, `:65`, `:228`). `test_async_checkpoint_cpu_clone` and `test_checkpoint_frequency` now use pytest `tmp_path`; the latter asserts `models/alphatafl_v*.pt` is unchanged. The async-save timing bound was loosened from 50 ms to 500 ms and the fixed sleep replaced by polling (it failed under full-suite load).
+- **Related:** `Trainer.__init__` now writes the fresh model synchronously (it was async, so the file could be missing right after construction).
+- **Tests:** two new `TestVersionedCheckpointLocation` tests in `tests/python/test_checkpoint.py`. Full Python suite: 74 passed, 2 skipped, 1 flaky (`test_hot_reload_no_reload`, server-startup timing; passes on rerun). No file in `models/` changed during the run.
+- **Docs:** `docs/training/training_loop.md`.
+
 ## [2026-11-12] Fix | Checkpoint handling (atomic writes, safe init, compiled hot-reload)
 
 - **Hot-reload under `ALPHATAFL_COMPILE=1`**: loading a plain state dict into the `torch.compile` wrapper fails (`Missing key(s)... "_orig_mod.*"`, verified), so the server silently kept stale weights. `inference_server_main` now keeps `base_model` and loads into it; the wrapper shares its parameters.

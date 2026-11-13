@@ -138,3 +138,22 @@ class TestTrainerCheckpointSafety:
         saved = torch.load(path)[k]
         assert torch.all(saved == 2.0)
         assert _leftover_tmp(str(tmp_path)) == []
+
+
+class TestVersionedCheckpointLocation:
+    def test_versioned_checkpoints_live_next_to_model_path(self, tmp_path):
+        trainer = Trainer(model_path=str(tmp_path / "current_best.pt"), device="cpu")
+        assert trainer.checkpoint_dir == str(tmp_path)
+
+        trainer.maybe_checkpoint(5000)
+        target = tmp_path / "alphatafl_v00001.pt"
+        deadline = time.time() + 10
+        while not target.exists() and time.time() < deadline:
+            time.sleep(0.05)
+        assert target.exists()
+        AlphaTaflNet().load_state_dict(torch.load(str(target)))
+
+    def test_version_numbering_resumes_from_own_directory(self, tmp_path):
+        torch.save({}, str(tmp_path / "alphatafl_v00007.pt"))
+        trainer = Trainer(model_path=str(tmp_path / "current_best.pt"), device="cpu")
+        assert trainer.save_count == 7 * 50

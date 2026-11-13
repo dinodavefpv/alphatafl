@@ -36,7 +36,9 @@ $L = (z - v)^2 - \pi \log p$
 - **Write ordering**: each `save_model()` call takes a sequence number; writes are serialized by `_save_lock` and a save whose snapshot is older than the last one written is dropped, so an older snapshot can never land on top of a newer one.
 - **Unloadable checkpoint on init**: if `current_best.pt` exists but cannot be loaded (corrupt file or incompatible architecture), `backup_unloadable()` moves it to `current_best.unloadable_<timestamp>.pt` before a fresh model is saved. Transient I/O errors (`OSError`) are retried and then raised — never treated as corruption.
 - **Checkpoint frequency**: `current_best.pt` every 500 training batches, versioned `alphatafl_vXXXXX.pt` every 5000 batches.
-- Versioned checkpoint numbering scans existing files on init to resume correctly.
+- **Checkpoint directory**: versioned checkpoints are written to `Trainer.checkpoint_dir`, the directory containing `model_path` (`src/training/trainer.py:36`). With the default `models/current_best.pt` that is `models/`; a trainer constructed with a scratch path never touches `models/`.
+- Versioned checkpoint numbering scans `checkpoint_dir` on init to resume correctly.
+- **Initial save**: when no checkpoint exists (or an unloadable one was backed up), `__init__` writes the fresh model synchronously, so the file exists when the constructor returns.
 - Training loss is printed every 1000 batches (in the CLI training loop).
 
 ## Source Files

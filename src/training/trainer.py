@@ -31,6 +31,9 @@ class Trainer:
         self.device = device if device else ("cuda" if torch.cuda.is_available() else "cpu")
         self.model = AlphaTaflNet().to(self.device)
         self.model_path = model_path
+        # Versioned checkpoints live next to model_path, so a trainer pointed at a
+        # scratch path never reads or writes the real models/ directory.
+        self.checkpoint_dir = os.path.dirname(os.path.abspath(model_path))
 
         # Checkpoint write ordering (see save_model)
         self._seq_lock = threading.Lock()    # guards _save_seq
@@ -55,11 +58,11 @@ class Trainer:
                 self.save_model(sync=True)
         else:
             print(f"Initialized new model on {self.device}")
-            self.save_model()
+            self.save_model(sync=True)
         
         # Scan for existing versioned checkpoints to resume numbering
         highest = 0
-        for f in glob.glob("models/alphatafl_v*.pt"):
+        for f in glob.glob(os.path.join(self.checkpoint_dir, "alphatafl_v*.pt")):
             m = re.search(r'alphatafl_v(\d+)\.pt', f)
             if m:
                 highest = max(highest, int(m.group(1)))
@@ -222,7 +225,7 @@ class Trainer:
             if batch_count % 5000 == 0:
                 # Every 5000 batches: versioned checkpoint
                 version = batch_count // 5000
-                version_path = f"models/alphatafl_v{version:05d}.pt"
+                version_path = os.path.join(self.checkpoint_dir, f"alphatafl_v{version:05d}.pt")
                 state_dict = {k: v.cpu().clone() for k, v in self.model.state_dict().items()}
                 def _save_version():
                     try:
