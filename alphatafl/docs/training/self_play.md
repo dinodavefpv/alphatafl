@@ -13,8 +13,8 @@ Used when `ALPHATAFL_BATCHED=1`. Function: `self_play_game_batched()`.
 
 1. **C++ MCTS** accumulates leaf states until batch is full.
 2. **Python callback** calls `GameState.batch_to_tensor()` (one C++ boundary crossing for entire batch), converts to `torch.from_numpy()`, sends to Inference Server via `inference_queue`.
-3. **Inference Server** evaluates on GPU, returns `(policy, value)` via per-worker `response_queue`.
-4. **Worker** applies legal move masks and Dirichlet noise (root-only), returns results to C++ MCTS.
+3. **Inference Server** evaluates on GPU, applies softmax to the policy logits, and returns the softmaxed `(policy, value)` pair via the per-worker `response_queue`.
+4. **Worker** forwards the raw softmaxed policies and values back to the C++ MCTS as-is. Legal-move masking, softmax renormalization, and the root-only Dirichlet mixing all happen **inside the C++ `MCTSNode::expand` callback** (Phase 5D; see `docs/api/interface_contract.md` §7). The Dirichlet ε/α are passed to the C++ `MCTS` constructor at `self_play_game_batched` startup.
 5. Completed game data pushed to `replay_queue` (no disk I/O on hot path).
 
 ### Legacy Single-Leaf Path (fallback)

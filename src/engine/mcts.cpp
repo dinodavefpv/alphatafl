@@ -50,35 +50,37 @@ void MCTSNode::expand(const std::vector<float>& action_probs, const std::vector<
     is_expanded = true;
     legal_action_indices.clear();
     child_priors.clear();
-    
-    float max_logit = -std::numeric_limits<float>::infinity();
-    bool has_legal = false;
+
+    // Input is already a probability distribution: mask illegal actions and renormalize.
+    float sum = 0.0f;
+    int legal_count = 0;
     for (size_t i = 0; i < action_probs.size(); ++i) {
         if (legal_mask[i] > 0.5f) {
-            has_legal = true;
-            if (action_probs[i] > max_logit) {
-                max_logit = action_probs[i];
+            sum += action_probs[i];
+            ++legal_count;
+        }
+    }
+
+    if (legal_count == 0) return;
+
+    legal_action_indices.reserve(legal_count);
+    child_priors.reserve(legal_count);
+    if (sum > 0.0f) {
+        for (size_t i = 0; i < action_probs.size(); ++i) {
+            if (legal_mask[i] > 0.5f) {
+                legal_action_indices.push_back(static_cast<int>(i));
+                child_priors.push_back(action_probs[i] / sum);
             }
         }
-    }
-    
-    if (!has_legal) return;
-    
-    float sum_exp = 0.0f;
-    std::vector<std::pair<int, float>> exp_logits;
-    for (size_t i = 0; i < action_probs.size(); ++i) {
-        if (legal_mask[i] > 0.5f) {
-            float exp_val = std::exp(action_probs[i] - max_logit);
-            exp_logits.push_back({static_cast<int>(i), exp_val});
-            sum_exp += exp_val;
+    } else {
+        // All-zero policy: fall back to uniform over legal moves.
+        float uniform = 1.0f / static_cast<float>(legal_count);
+        for (size_t i = 0; i < action_probs.size(); ++i) {
+            if (legal_mask[i] > 0.5f) {
+                legal_action_indices.push_back(static_cast<int>(i));
+                child_priors.push_back(uniform);
+            }
         }
-    }
-    
-    legal_action_indices.reserve(exp_logits.size());
-    child_priors.reserve(exp_logits.size());
-    for (const auto& pair : exp_logits) {
-        legal_action_indices.push_back(pair.first);
-        child_priors.push_back(pair.second / sum_exp);
     }
 }
 
@@ -153,16 +155,14 @@ std::vector<float> MCTS::search(const GameState& initial_state, int num_simulati
         double leaf_value = 0.0;
         if (traversal.winner == Player::NONE) {
             auto child_eval = eval_fn(traversal);
-            leaf_value = child_eval.second;
+            // Network value is current-player perspective; nodes store value from
+            // the perspective of the player to move at the parent, so negate.
+            leaf_value = -child_eval.second;
             node->expand(child_eval.first, traversal.get_legal_moves_mask());
         } else {
-            if (traversal.winner == Player::ATTACKER) {
-                leaf_value = (traversal.current_turn == Player::ATTACKER) ? 1.0 : -1.0;
-            } else if (traversal.winner == Player::DEFENDER) {
-                leaf_value = (traversal.current_turn == Player::DEFENDER) ? 1.0 : -1.0;
-            } else {
-                leaf_value = 0.0;
-            }
+            // Any non-draw terminal is a win for the player to move at the parent
+            // (decisive or stalemate — the stalemated side loses).
+            leaf_value = (traversal.winner == Player::DRAW) ? 0.0 : 1.0;
         }
 
         double curr_value = leaf_value;
@@ -245,7 +245,9 @@ std::vector<float> MCTS::search(const GameState& initial_state, int num_simulati
             node->visit_count -= 3;
             node->value_sum += 3;
             node->visit_count += 1;
-            node->value_sum += values[i];
+            // Network value is current-player perspective; nodes store value from
+            // the perspective of the player to move at the parent, so negate.
+            node->value_sum -= values[i];
             node->is_pending = false;
             
             std::vector<float> policies_slice(policies.begin() + i * 4840, policies.begin() + (i + 1) * 4840);
@@ -294,16 +296,11 @@ std::vector<float> MCTS::search(const GameState& initial_state, int num_simulati
 
             auto it = node->children.find(action);
             if (it != node->children.end()) {
-                MCTSNode* child = it->second.get();
-                if (child->is_pending) {
-                    consecutive_all_pending_stall++;
-                    break;
-                }
                 Move move = get_move_from_index(action, BOARD_SIZE);
                 UndoInfo undo;
                 traversal.apply_move_inplace(move, undo);
                 undo_stack.push_back(undo);
-                node = child;
+                node = it->second.get();
             } else {
                 Move move = get_move_from_index(action, BOARD_SIZE);
                 UndoInfo undo;
@@ -318,8 +315,11 @@ std::vector<float> MCTS::search(const GameState& initial_state, int num_simulati
             }
         }
 
-        if (node == &root && root.is_expanded) {
-            // Undo any moves made before breaking
+        if (node->is_expanded) {
+            // Inner loop exited at an expanded node: an all-pending stall
+            // (select_child found no selectable action). This can happen at any
+            // depth, so always unwind the traversal before continuing. The stall
+            // counter above plus force-flush guarantees progress.
             for (auto it = undo_stack.rbegin(); it != undo_stack.rend(); ++it) {
                 Move m{it->from_row, it->from_col, it->to_row, it->to_col};
                 traversal.undo_move(m, *it);
@@ -360,14 +360,9 @@ std::vector<float> MCTS::search(const GameState& initial_state, int num_simulati
                 }
             }
         } else if (!node->is_expanded) {
-            double leaf_value = 0.0;
-            Player winner = traversal.winner;
-            Player turn = traversal.current_turn;
-            if (winner == Player::ATTACKER) {
-                leaf_value = (turn == Player::ATTACKER) ? 1.0 : -1.0;
-            } else if (winner == Player::DEFENDER) {
-                leaf_value = (turn == Player::DEFENDER) ? 1.0 : -1.0;
-            }
+            // Any non-draw terminal is a win for the player to move at the parent
+            // (decisive or stalemate — the stalemated side loses).
+            double leaf_value = (traversal.winner == Player::DRAW) ? 0.0 : 1.0;
 
             double back_val = leaf_value;
             MCTSNode* p = node;

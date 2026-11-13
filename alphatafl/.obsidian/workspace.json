@@ -11,10 +11,10 @@
             "id": "80cf7897147cab5e",
             "type": "leaf",
             "state": {
-              "type": "empty",
+              "type": "graph",
               "state": {},
-              "icon": "lucide-file",
-              "title": "New tab"
+              "icon": "lucide-git-fork",
+              "title": "Graph view"
             }
           }
         ]
@@ -37,7 +37,9 @@
               "type": "file-explorer",
               "state": {
                 "sortOrder": "alphabetical",
-                "autoReveal": false
+                "autoReveal": false,
+                "showSearch": false,
+                "searchQuery": ""
               },
               "icon": "lucide-folder-closed",
               "title": "Files"
@@ -176,7 +178,7 @@
       "bases:Create new base": false
     }
   },
-  "active": "0b8873a3bbfece38",
+  "active": "80cf7897147cab5e",
   "lastOpenFiles": [
     "docs/history/optimization_v1_benchmarks.md",
     "questions.md",

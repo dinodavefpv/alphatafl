@@ -30,6 +30,8 @@ Stores data needed to reverse a move:
 - `captured_pieces` — vector of `(row, col, Piece)` tuples for each captured piece
 - `prev_turn` — player before the move
 - `prev_winner` — winner before the move
+- `overwritten_history` — the ring-buffer slot contents that this move overwrote, restored by `undo_move()` so arbitrarily deep apply/undo sequences (MCTS traversals) leave all history planes intact
+- `post_hash` / `hash_counted` — the post-move hash incremented in `hash_counts` (and whether it was incremented), so `undo_move()` decrements exactly that entry
 
 ### Internal State Tracking (v1)
 - `hash_counts`: `std::unordered_map<uint64_t, uint8_t>` mapping board hashes to occurrence counts. Used for O(1) threefold repetition detection. **Never cleared on capture.**
@@ -50,7 +52,7 @@ Generates all legal moves for the current player.
 ### `apply_move(Move)` / `apply_move_inplace(Move, UndoInfo)`
 Updates the game state by applying a move. `apply_move()` calls `apply_move_inplace()` with a dummy `UndoInfo` for external use. `apply_move_inplace()` is used internally by MCTS with real undo tracking.
 
-1. Saves current board to ring buffer at `history_write_idx_`, advances index.
+1. Copies the ring-buffer slot at `history_write_idx_` into `UndoInfo.overwritten_history`, saves the current board into that slot, advances index.
 2. Records undo info (position, piece, turn, winner).
 3. Moves the piece.
 4. Checks for victory (King reaching a corner).
@@ -64,11 +66,11 @@ Reverses a move applied by `apply_move_inplace()`:
 1. Restores all captured pieces from `UndoInfo.captured_pieces`.
 2. Moves the piece back to its original position.
 3. Restores `current_turn` and `winner`.
-4. Decrements `hash_counts[hash]` (removes key if count reaches 0).
-5. Decrements `history_write_idx_` (unwinds ring buffer).
+4. If `hash_counted`, decrements `hash_counts[post_hash]` (removes key if count reaches 0).
+5. Decrements `history_write_idx_` and restores that slot from `UndoInfo.overwritten_history`, so `get_historical_board(1..3)` and `to_tensor()` match their pre-move values exactly.
 
 ### `check_threefold()`
-O(1) implementation: increments `hash_counts[compute_hash()]`. If count >= 3, sets `winner = Player::DRAW`. Never called on capture.
+O(1) implementation: increments `hash_counts[compute_hash()]`. If count >= 3, sets `winner = Player::DRAW`. Called at the end of `apply_move_inplace` only when the game has not already ended (i.e. `winner == Player::NONE`); captures alone do not end the game, so the threefold check still runs after a capture when no king capture or stalemate occurred.
 
 ### `check_captures(row, col, UndoInfo*)`
 Implemented in `game_state.cpp`. Uses the "sandwich" rule.

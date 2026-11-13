@@ -19,7 +19,7 @@ v1 is the performance optimization round targeting 5,000–8,000 states/sec (vs.
 
 **Python Interface (K0–K1):**
 - pytest test framework with `tests/python/` directory.
-- Interface contract document (`wiki/docs/api/interface_contract.md`) signed off by both owners.
+- Interface contract document (`alphatafl/docs/api/interface_contract.md`) signed off by both owners.
 - `EvalFnBatched` typedef, per-worker response queues, `USE_BATCHED_INFERENCE` feature flag.
 - Batched MCTS algorithm documented: virtual loss, pending-node semantics, all-pending stall guard.
 
@@ -75,9 +75,9 @@ v1 is the performance optimization round targeting 5,000–8,000 states/sec (vs.
 - `num_workers=0` because deque is accessed from main process — no pickling overhead.
 
 **Regression & Profiling (D10–D11):**
-- 33 test functions across 6 test suites (engine_tests, regression_tests, profile_tests) — 100% pass rate.
+- 36 C++ tests across 3 suites (engine_tests, regression_tests, profile_tests) — 100% pass rate. The profile_tests count grew from 6 to 9 after D12 when `NodeMemoryFootprint` and `MctsMemoryGrowth` were added.
 - Feature flag `ALPHATAFL_BATCHED` defaults to `"1"` (batched mode enabled by default).
-- `ALPHATAFL_INFERENCE_TIMEOUT_MS` defaults to 5ms, `ALPHATAFL_INFERENCE_MAX_BATCH` defaults to 256.
+- `ALPHATAFL_INFERENCE_TIMEOUT_MS` defaults to 1ms (lowered from 5ms in Phase 5A per the timeout sweep), `ALPHATAFL_INFERENCE_MAX_BATCH` defaults to 256.
 - End-to-end benchmark target: 5,000–8,000 states/sec with 800 simulations, single game under 5 seconds.
 
 ---

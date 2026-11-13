@@ -1,4 +1,5 @@
 import multiprocessing as mp
+import threading
 import time
 import os
 import signal
@@ -73,6 +74,11 @@ class Orchestrator:
         self.games_completed = 0
         self.states_generated = 0
         self.active_tasks = 0
+
+        # Lock-protected free-list of worker slot ids. Response queues and SHM
+        # regions are per-slot, so concurrently running games must never share one.
+        self._slot_lock = threading.Lock()
+        self._free_slots = list(range(num_workers))
         
         self.use_batched = os.environ.get("ALPHATAFL_BATCHED", "1") == "1"
         self.use_shm = os.environ.get("ALPHATAFL_SHM", "0") == "1"
@@ -138,6 +144,9 @@ class Orchestrator:
     def start(self):
         if not self.is_running:
             self.is_running = True
+            # Rebuild the slot free-list in case num_workers changed since __init__
+            with self._slot_lock:
+                self._free_slots = list(range(self.num_workers))
             if self.use_batched:
                 self._start_inference_server()
             self.pool = mp.Pool(processes=self.num_workers, initializer=init_worker)
@@ -180,29 +189,36 @@ class Orchestrator:
     def dispatch_game(self, callback=None):
         if not self.is_running:
             return
-            
+
+        # Acquire a unique worker slot; skip dispatch if all slots are in use
+        with self._slot_lock:
+            if not self._free_slots:
+                return
+            worker_id = self._free_slots.pop()
+
         self.active_tasks += 1
-        
-        # Round-robin assign worker_id
-        worker_id = self.games_completed % self.num_workers
-        
+
         params = (
             worker_id, self.num_simulations, self.batch_size,
             self.inference_queue, self.response_queues[worker_id] if self.response_queues else None,
             self.replay_queue,
             self.use_batched
         )
-        
+
         def internal_callback(result):
             worker_id, num_states = result
+            with self._slot_lock:
+                self._free_slots.append(worker_id)
             self.games_completed += 1
             self.states_generated += num_states
             self.active_tasks -= 1
             print(f"\n[Worker] Game finished! Generated {num_states} states. (Total Games: {self.games_completed})")
             if callback:
                 callback(result)
-                
+
         def internal_error(err):
+            with self._slot_lock:
+                self._free_slots.append(worker_id)
             self.active_tasks -= 1
             print(f"Worker error: {err}")
 

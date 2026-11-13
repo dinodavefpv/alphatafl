@@ -129,6 +129,47 @@ TEST(UndoTest, UndoHistory) {
     EXPECT_NE(hist1, state.board); // T-1 should differ from current
 }
 
+TEST(UndoTest, UndoMultiPlyRestoresHistory) {
+    // Populate every history slot with distinct boards
+    GameState state;
+    for (int i = 0; i < 5; ++i) {
+        auto moves = state.get_legal_moves();
+        ASSERT_FALSE(moves.empty());
+        state.apply_move(moves[i % moves.size()]);
+        ASSERT_EQ(state.winner, Player::NONE);
+    }
+
+    const auto board_before = state.board;
+    const auto history_before = state.board_history_;
+    const int idx_before = state.history_write_idx_;
+    const auto tensor_before = state.to_tensor();
+
+    // Apply a sequence deeper than the ring buffer, as an MCTS traversal does
+    std::vector<std::pair<Move, UndoInfo>> stack;
+    for (int i = 0; i < 6 && state.winner == Player::NONE; ++i) {
+        auto moves = state.get_legal_moves();
+        ASSERT_FALSE(moves.empty());
+        Move m = moves[(i * 7) % moves.size()];
+        UndoInfo undo;
+        state.apply_move_inplace(m, undo);
+        stack.emplace_back(m, undo);
+    }
+    ASSERT_GE(stack.size(), 4u);
+
+    for (auto it = stack.rbegin(); it != stack.rend(); ++it) {
+        state.undo_move(it->first, it->second);
+    }
+
+    EXPECT_EQ(state.board, board_before);
+    EXPECT_EQ(state.history_write_idx_, idx_before);
+    EXPECT_EQ(state.board_history_, history_before);
+    for (int d = 1; d <= 3; ++d) {
+        EXPECT_EQ(state.get_historical_board(d),
+                  history_before[(idx_before - d + 4) % 4]) << "depth " << d;
+    }
+    EXPECT_EQ(state.to_tensor(), tensor_before);
+}
+
 TEST(UndoTest, UndoRepetition) {
     GameState state;
     clear_board(state);

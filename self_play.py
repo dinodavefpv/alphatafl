@@ -163,7 +163,15 @@ def self_play_game_batched(worker_id, num_simulations, batch_size,
                 fallback_p = np.full((n_states, 4840), 1.0 / 4840.0, dtype=np.float32)
                 fallback_v = np.zeros(n_states, dtype=np.float32)
                 return fallback_p, fallback_v
-            
+
+            # Validate the response belongs to this request before reading SHM
+            if rid != req_id or n_out != n_states:
+                print(f"[Worker {worker_id}] Inference response mismatch: rid={rid} "
+                      f"(expected {req_id}), n_out={n_out} (expected {n_states}); using fallback")
+                fallback_p = np.full((n_states, 4840), 1.0 / 4840.0, dtype=np.float32)
+                fallback_v = np.zeros(n_states, dtype=np.float32)
+                return fallback_p, fallback_v
+
             # Read results from shared memory
             policies = np.ndarray((n_out, 4840), dtype=np.float32,
                                   buffer=_shm_policy.buf).copy()
@@ -180,17 +188,25 @@ def self_play_game_batched(worker_id, num_simulations, batch_size,
             inference_queue.put((worker_id, req_id, tensor))
             
             try:
-                _, policies, values = response_queue.get(timeout=30)
+                rid, policies, values = response_queue.get(timeout=30)
             except Exception as e:
                 print(f"[Worker {worker_id}] Inference response timeout/error: {e}")
                 fallback_p = np.full((n_states, 4840), 1.0 / 4840.0, dtype=np.float32)
                 fallback_v = np.zeros(n_states, dtype=np.float32)
                 return fallback_p, fallback_v
-            
+
             if isinstance(policies, torch.Tensor):
                 policies = policies.numpy()
             if isinstance(values, torch.Tensor):
                 values = values.numpy()
+
+            # Validate the response belongs to this request before feeding it to C++
+            if rid != req_id or len(policies) != n_states or len(values) != n_states:
+                print(f"[Worker {worker_id}] Inference response mismatch: rid={rid} "
+                      f"(expected {req_id}), n_out={len(policies)} (expected {n_states}); using fallback")
+                fallback_p = np.full((n_states, 4840), 1.0 / 4840.0, dtype=np.float32)
+                fallback_v = np.zeros(n_states, dtype=np.float32)
+                return fallback_p, fallback_v
         
         return policies, values
     

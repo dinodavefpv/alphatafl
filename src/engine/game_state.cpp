@@ -110,12 +110,13 @@ std::vector<Move> GameState::get_legal_moves() const {
     return moves;
 }
 
-void GameState::check_threefold() {
+uint64_t GameState::check_threefold() {
     uint64_t hash = compute_hash();
     hash_counts[hash]++;
     if (hash_counts[hash] >= 3) {
         winner = Player::DRAW;
     }
+    return hash;
 }
 
 void GameState::apply_move(const Move& move) {
@@ -126,7 +127,9 @@ void GameState::apply_move(const Move& move) {
 void GameState::apply_move_inplace(const Move& move, UndoInfo& undo) {
     if (winner != Player::NONE) return;
 
-    // Ring buffer: save current board before mutating
+    // Ring buffer: save current board before mutating. Keep the slot's previous
+    // contents in the undo record so undo_move can restore them.
+    undo.overwritten_history = board_history_[history_write_idx_];
     board_history_[history_write_idx_] = board;
     history_write_idx_ = (history_write_idx_ + 1) % 4;
 
@@ -155,7 +158,8 @@ void GameState::apply_move_inplace(const Move& move, UndoInfo& undo) {
         if (get_legal_moves().empty()) {
             winner = (current_turn == Player::ATTACKER) ? Player::DEFENDER : Player::ATTACKER;
         } else {
-            check_threefold();
+            undo.post_hash = check_threefold();
+            undo.hash_counted = true;
         }
     }
 }
@@ -177,17 +181,21 @@ void GameState::undo_move(const Move& move, const UndoInfo& undo) {
     current_turn = undo.prev_turn;
     winner = undo.prev_winner;
 
-    // Undo threefold hash count
-    uint64_t hash = compute_hash();
-    if (hash_counts.count(hash)) {
-        hash_counts[hash]--;
-        if (hash_counts[hash] == 0) {
-            hash_counts.erase(hash);
+    // Undo threefold hash count: decrement the post-move hash recorded at apply
+    // time (the pre-move hash was never incremented by this move).
+    if (undo.hash_counted) {
+        auto it = hash_counts.find(undo.post_hash);
+        if (it != hash_counts.end()) {
+            it->second--;
+            if (it->second == 0) {
+                hash_counts.erase(it);
+            }
         }
     }
 
-    // Undo ring buffer write
+    // Undo ring buffer write and restore the slot's previous contents
     history_write_idx_ = (history_write_idx_ - 1 + 4) % 4;
+    board_history_[history_write_idx_] = undo.overwritten_history;
 }
 
 bool GameState::is_hostile(int row, int col, Player moving_player) const {

@@ -1,6 +1,6 @@
 # Phase 5 Optimization
 
-Details on the Phase 5A through Phase 5E optimization efforts for AlphaTafl v1.
+Details on the Phase 5A through Phase 5F optimization efforts for AlphaTafl v1.
 
 ---
 
@@ -107,6 +107,7 @@ Move GPU inference into the C++ extension to eliminate Python `mp.Queue` round-t
 ### Test Results
 
 - All 60 Python tests pass (`pytest tests/python/`).
+  *(Note: this figure was reported when the Phase 5D step finished. The current test count is 62 methods across 5 files (typically 59 pass, 3 skip on Windows) — see `docs/history/optimization_v1_benchmarks.md` §7. The discrepancy is from test additions between Phase 5D and the lint pass; no test was dropped in functionality.)*
 - All 9 profile tests and 21 regression tests pass (`build/Release/profile_tests.exe` & `regression_tests.exe`).
 
 ### Benchmark Results

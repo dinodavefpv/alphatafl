@@ -135,12 +135,12 @@ With SHM at 1ms timeout and batch_size=64, a 180-turn game at 800 sims/turn proj
 
 | Test File           | Tests  | Status                                              |
 | ------------------- | ------ | --------------------------------------------------- |
-| `test_interface.py` | 21     | All pass                                            |
+| `test_interface.py` | 27     | All pass                                            |
 | `test_inference.py` | 14     | All pass                                            |
 | `test_phase3.py`    | 7      | All pass                                            |
-| `test_phase4.py`    | 8      | 6 pass, 2 skip (torch.compile — no MSVC on Windows) |
-| `test_phase5.py`    | 6      | 5 pass, 1 skip (Windows CUDA cleanup hang)          |
-| **Total**           | **56** | **54 pass, 2 skip**                                 |
+| `test_phase4.py`    | 8      | 6 pass, 2 skip (`torch.compile` — fails on PyTorch < 2.0 or when MSVC is absent) |
+| `test_phase5.py`    | 6      | 5 pass, 1 skip (Windows e2e subprocess cleanup)    |
+| **Total**           | **62** | **59 pass, 3 skip** (counts assume modern PyTorch and a working `torch.compile`; one extra skip appears on Windows where MSVC is absent) |
 
 ### C++ Tests (Engine + Regression + Profiling)
 
@@ -148,8 +148,8 @@ With SHM at 1ms timeout and batch_size=64, a 180-turn game at 800 sims/turn proj
 | ------------------ | ------ | --------------------------------------------------------------- |
 | `engine_tests`     | 6      | Board setup, initial moves, captures, king escape, king capture |
 | `regression_tests` | 21     | 9 undo correctness, 6 engine regression, 2 ring buffer, 4 MCTS  |
-| `profile_tests`    | 6      | 6 micro-benchmarks with timing output                           |
-| **Total**          | **33** | **33/33 (100%)**                                                |
+| `profile_tests`    | 9      | 6 micro-benchmarks + `NodeMemoryFootprint` + `MctsMemoryGrowth` (added in D12) |
+| **Total**          | **36** | **36/36 (100%)**                                                |
 
 **Regression detail:**
 - **Undo (9/9)**: Basic, capture, king capture, king escape, turn, history, repetition (threefold), deep (10 cycles), different-move-after-undo
@@ -435,9 +435,9 @@ These are **architectural** — they cannot be reduced without eliminating the p
 
 ## Related Pages
 
-- [[optimization_v1]] — Overview of the optimization effort
-- [[inference_architecture]] — Queue-based inference server design
-- [[cpp_engine_performance]] — C++ engine benchmarks and profiling
+- [v1 Optimization](./optimization_v1.md) — Overview of the optimization effort
+- [Inference Server](../training/inference_server.md) — Queue-based inference server design
+- [C++ MCTS](../engine/mcts.md) — C++ engine MCTS design
 
 ---
 

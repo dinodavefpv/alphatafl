@@ -282,7 +282,7 @@ class AlphaTaflCLI(cmd.Cmd):
     def _generation_loop(self):
         max_games = 10000
         while self.continuous_generation and self.orchestrator.games_completed < max_games:
-            target_tasks = self.orchestrator.num_workers * 2
+            target_tasks = self.orchestrator.num_workers
             while self.orchestrator.active_tasks < target_tasks and self.continuous_generation and self.orchestrator.games_completed < max_games:
                 self.orchestrator.dispatch_game()
             time.sleep(1)

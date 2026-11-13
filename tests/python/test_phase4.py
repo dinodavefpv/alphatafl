@@ -163,6 +163,60 @@ class TestK9DataLoader:
         assert not is_sorted, "DataLoader should shuffle the buffer"
 
 
+class TestQueueReceiverLifetime:
+    """F2 regression: train_step must not kill the replay-queue receiver thread."""
+
+    def test_train_step_preserves_queue_receiver(self):
+        trainer = Trainer(model_path="models/test_queue_receiver.pt")
+        replay_queue = mp.Queue()
+        try:
+            trainer.start_queue_receiver(replay_queue)
+
+            # Push enough items to fill the buffer beyond one batch
+            for _ in range(300):
+                replay_queue.put((
+                    torch.randn((14, 11, 11), dtype=torch.float32),
+                    torch.softmax(torch.randn(4840, dtype=torch.float32), dim=0),
+                    torch.randn(1, dtype=torch.float32),
+                ))
+
+            # Wait until the receiver has drained enough items into the buffer
+            deadline = time.time() + 15
+            while len(trainer.buffer) < 128 and time.time() < deadline:
+                time.sleep(0.05)
+            assert len(trainer.buffer) >= 128
+
+            # The first train_step creates the DataLoader; it must not stop the receiver
+            loss = trainer.train_step(batch_size=128)
+            assert loss is not None
+            assert trainer._queue_receiver_running is True
+            assert trainer._queue_receiver_thread is not None
+            assert trainer._queue_receiver_thread.is_alive()
+
+            # A newly queued item must still land in the buffer
+            before = len(trainer.buffer)
+            replay_queue.put((
+                torch.randn((14, 11, 11), dtype=torch.float32),
+                torch.softmax(torch.randn(4840, dtype=torch.float32), dim=0),
+                torch.randn(1, dtype=torch.float32),
+            ))
+            deadline = time.time() + 5
+            while len(trainer.buffer) <= before and time.time() < deadline:
+                time.sleep(0.05)
+            assert len(trainer.buffer) > before
+        finally:
+            trainer.stop_queue_receiver()
+            while True:
+                try:
+                    replay_queue.get_nowait()
+                except Exception:
+                    break
+            replay_queue.close()
+            replay_queue.join_thread()
+            if os.path.exists("models/test_queue_receiver.pt"):
+                os.remove("models/test_queue_receiver.pt")
+
+
 class TestFeatureFlagDefaults:
     """Verify Phase 4 feature flag defaults."""
 

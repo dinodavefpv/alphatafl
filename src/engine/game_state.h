@@ -46,6 +46,11 @@ struct UndoInfo {
     std::vector<std::tuple<int, int, Piece>> captured_pieces;
     Player prev_turn;
     Player prev_winner;
+    // Ring-buffer slot overwritten by this move; restored on undo so that
+    // multi-ply apply/undo sequences leave the history planes intact.
+    std::array<std::array<Piece, BOARD_SIZE>, BOARD_SIZE> overwritten_history;
+    uint64_t post_hash = 0;
+    bool hash_counted = false;
 };
 
 class GameState {
@@ -88,7 +93,7 @@ private:
     void check_win_condition(int row, int col);
     bool is_hostile(int row, int col, Player moving_player) const;
     Player get_piece_owner(Piece p) const;
-    void check_threefold();
+    uint64_t check_threefold();
 };
 
 } // namespace alphatafl

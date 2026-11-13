@@ -58,7 +58,11 @@ class Trainer:
         # K9: DataLoader for efficient batching (created lazily when buffer has data)
         self.dataloader = None
         self.dataloader_iter = None
-    
+
+        # Replay-queue receiver state (started via start_queue_receiver)
+        self._queue_receiver_thread = None
+        self._queue_receiver_running = False
+
     def _ensure_dataloader(self):
         """Create or recreate DataLoader if buffer has data."""
         if self.dataloader is None and len(self.buffer) > 0:
@@ -70,10 +74,7 @@ class Trainer:
                 num_workers=0,
                 pin_memory=(self.device == "cuda")
             )
-        
-        self._queue_receiver_thread = None
-        self._queue_receiver_running = False
-        
+
     def start_queue_receiver(self, replay_queue):
         """Start a background thread that pulls from replay_queue into buffer."""
         if self._queue_receiver_running:

@@ -1,5 +1,55 @@
 # AlphaTafl Wiki Log
 
+## [2026-11-12] Fix | History ring buffer restored on undo
+
+- **Bug:** `GameState::apply_move_inplace` overwrote a slot of the 4-slot `board_history_` ring buffer, and `undo_move` only rewound `history_write_idx_` without restoring the old contents. Any MCTS traversal two or more plies deep therefore clobbered the root's T-1..T-3 boards, so later leaves were evaluated with wrong history planes (channels 3–11) — a train/inference mismatch, since training tensors come from the real, never-undone game state.
+- **Fix:** `UndoInfo` gains `overwritten_history`; `apply_move_inplace` saves the slot before writing (`src/engine/game_state.cpp:132`) and `undo_move` restores it (`src/engine/game_state.cpp:198`).
+- **Test:** added `UndoTest.UndoMultiPlyRestoresHistory` in `tests/cpp/test_regression.cpp` (6-ply apply/undo, checks board, ring buffer, write index, and `to_tensor()`). Verified it fails without the restore and passes with it. C++: 22/22 regression + 6/6 engine tests pass. Python: 62 passed, 2 skipped, 1 flaky inference-server timing test (a different one per run; each passes in isolation).
+- **Docs:** `docs/engine/game_state.md` — documented `overwritten_history` and the `post_hash` / `hash_counted` undo fields, updated the `apply_move_inplace` and `undo_move` steps.
+
+## [2026-06-01] Lint | Documentation accuracy pass (round 2)
+
+Cross-referenced every page in `alphatafl/docs/` against the live code (`src/`, `cli.py`, `gui.py`, `self_play.py`, `tests/`, `CMakeLists.txt`). The previous round mostly caught stale env-var defaults and missing APIs; this round caught a few subtle doc/code mismatches that had been left in place.
+
+Fixed the following (current-state pages only — historical pages were not rewritten):
+
+- **`docs/api/bindings.md`**: removed the `is_restricted_square(r, c)` line from the Python `GameState` API list — the C++ method exists (`src/engine/game_state.h:82`) but is not bound in `src/bindings/bind.cpp:39-77`. The doc is the binding contract, not the C++ surface. Also reworded the `to_tensor()` description: the binding copies the C++ `std::vector<float>` into a capsule-managed buffer and exposes a numpy view of that buffer, so it is "single C++→Python copy with capsule-managed lifetime", not "zero-copy".
+- **`docs/api/interface_contract.md`**: the C++ API surface section listed `is_restricted_square(r, c) → bool (Pybind11-bound)` — replaced with an explicit note that the C++ method exists but is not bound, so callers must wrap the call in a C++ helper if they need it from Python.
+- **`docs/architecture/README.md`**: removed the two "zero-copy tensor generation / zero-copy tensor views" claims in the High-Level Overview (same reason as `to_tensor()` above). Reworded data-flow step 3 ("Worker-Side Pre-Processing") so it no longer reads as if the worker applies the legal mask or Dirichlet noise; the worker just obtains the mask and forwards the raw softmaxed policy, and the C++ `MCTSNode::expand` does the masking and Dirichlet mixing (Phase 5D). Also added the explicit `dirichlet_alpha=0.3, dirichlet_epsilon=0.25` from `self_play_game_batched` so the data flow matches the actual call site.
+- **`docs/engine/game_state.md`**: `check_threefold()` was documented as "Never called on capture". The code (`src/engine/game_state.cpp:113-119`, called from `apply_move_inplace` line 158) shows that captures alone do not end the game, so the threefold check still runs after a capture when no king capture or stalemate has occurred. Reworded to describe the actual condition: called only when `winner == Player::NONE`.
+- **`docs/engine/mcts.md`**: the `src/training/mcts.py` source link was described as a "Python fallback implementation, deprecated". It is not a fallback — the C++ `MCTS` in single-leaf mode (no `eval_fn_batched`) is the fallback. The pure-Python file is an abandoned prototype not imported by any module. Replaced with a note to that effect. Also fixed the `dirichlet_epsilon` default description, which incorrectly said "the GUI and CLI typically leave it at 0 and apply noise from Python": the GUI uses the default and adds no noise, the CLI batched self-play passes `0.25` to enable C++-side mixing, and only the legacy single-leaf self-play leaves the ctor default and mixes noise from inside its Python `eval_fn` callback.
+- **`docs/training/self_play.md`**: the Batched Path step 4 said "Worker applies legal move masks and Dirichlet noise (root-only), returns results to C++ MCTS". This contradicts `docs/api/interface_contract.md` §7. The worker only forwards the raw softmaxed `(policy, value)`; the C++ `MCTSNode::expand` does the masking, softmax renormalization, and Dirichlet mixing. Step 3 was also tightened to make the server's role (apply softmax to the policy logits) explicit.
+- **`docs/training/training_loop.md`**: the DataLoader description said `pin_memory=True` unconditionally. The code (`src/training/trainer.py:71`) uses `pin_memory=(self.device == "cuda")` so the doc now says the same.
+
+No code was changed in this pass — documentation only. The only remaining `is_restricted_square` mention in the current-state wiki is the explicit "not currently bound" note in `docs/api/interface_contract.md`, which is intentional. The only remaining "zero-copy" / "pin_memory=True" / "deprecated" mentions live in `docs/history/`, where they are accurate historical records.
+
+## [2026-06-01] Orientation | Added project-root `AGENTS.md`
+
+- The schema document (`alphatafl/WIKI.md`) was buried inside the wiki folder, so a fresh LLM agent visiting the project had no obvious entry point. Added `AGENTS.md` at the project root as the canonical orientation file.
+- `AGENTS.md` is a thin pointer: it names the canonical wiki location (`alphatafl/`), lists the entry-point files (`index.md`, `log.md`, `docs/`, `WIKI.md`), and states the three hard rules (no root-level `wiki/`, current-state pages reflect only the current code, every change updates `index.md` and `log.md`).
+- Full schema, conventions, and workflows still live in `alphatafl/WIKI.md`; `AGENTS.md` is intentionally a short orientation, not a duplicate.
+- Logged here per the rule that every wiki-affecting change updates `log.md`.
+
+## [2026-06-01] Merge | Consolidated stale `wiki/` split into the canonical Obsidian wiki at `alphatafl/`
+
+- Investigation: a root-level `wiki/` directory had been created in parallel with the proper Obsidian wiki at `alphatafl/`. The two had diverged: `alphatafl/docs/history/optimization_v1_phase5.md` and `alphatafl/docs/history/optimization_v1_benchmarks.md` (Sections 11–13) already contain the same content as `wiki/phase5_optimization.md` and `wiki/benchmarks.md`, and the `alphatafl/` index/log include earlier entries (back to 2026-05-08) missing from `wiki/`.
+- Resolution: the `wiki/` folder was a stale duplicate with no unique content beyond what `alphatafl/` already had. Deleted it.
+- Schema fix: updated `alphatafl/WIKI.md` to state the wiki lives at `alphatafl/` (not `wiki/`), since the old note was the root cause of the split.
+- Followed by a lint pass against the live codebase to repair stale references and outdated API descriptions. See entries below.
+
+## [2026-06-01] Lint | Documentation accuracy pass
+
+Audited every page in `alphatafl/docs/` against the current code. Fixed the following:
+
+- **`docs/api/interface_contract.md`**: documented the `InferenceEngine` (Phase 5F) C++ ONNX inference class, added the `dirichlet_alpha` and `dirichlet_epsilon` constructor parameters that the C++ `MCTS` class has had since v1, removed the "raw softmax probabilities, worker-side legal masking" requirement that Phase 5D moved into C++, updated `ALPHATAFL_INFERENCE_TIMEOUT_MS` default from `"5"` to `"1"`, and added the `ALPHATAFL_SHM` flag.
+- **`docs/api/bindings.md`**: added the `InferenceEngine` class, added the `dirichlet_alpha` and `dirichlet_epsilon` constructor parameters for `MCTS`.
+- **`docs/engine/mcts.md`**: added the `dirichlet_alpha` and `dirichlet_epsilon` parameters to the constructor, added the `MCTSNode::get_child_prior` method (Phase 5E).
+- **`docs/architecture/README.md`**: data flow now says `1ms timeout` (matches the 1ms default swept in Phase 5A); the existing ONNX-C++ note is retained.
+- **`docs/training/inference_server.md`**: explicitly notes that the standalone C++ ONNX path (`InferenceEngine`) is the alternative post-Phase-5F and that the Python Inference Server and the C++ `InferenceEngine` are mutually exclusive inference backends.
+- **`docs/history/optimization_v1.md`**: fixed test counts. The Phase 1–4 section's "50 passing tests" figure and the historical "60 Python tests" line in `optimization_v1_phase5.md` are now followed by clarifying notes; the current count is 62 Python test methods (27 + 14 + 7 + 8 + 6) across 5 files (typically 59 pass, 3 skip on Windows). The C++ test count was bumped from 33 to 36 (6 + 21 + 9) across 3 files (the 9 figure reflects the `NodeMemoryFootprint` and `MctsMemoryGrowth` profile tests added in D12).
+- **`docs/history/optimization_v1_benchmarks.md`**: Section 7's `test_interface.py` row updated from 21 to 27 and the total from 56 to 62 (59 pass + 3 skip); profile_tests row updated from 6 to 9 to match the D12 additions.
+- **`docs/history/optimization_v1.md`**, **`docs/history/initial_v0.md`**: replaced `wiki/docs/...` path references with `alphatafl/docs/...` to match the actual layout.
+
 ## [2026-05-31] Inference | Step 3 ONNX Runtime Standalone C++ Inference
 - Transitioned model inference backend of `InferenceEngine` from PyTorch C++ (LibTorch) to standalone ONNX Runtime on CUDA.
 - Patched PyTorch model export script (`scripts/export_onnx.py`) to flatten policy logits using `p.flatten(1)` instead of dynamic reshape `p.reshape(p.size(0), -1)` to prevent division-by-batch-size bugs in ONNX Runtime.
@@ -8,6 +58,8 @@
 - Validated numerical parity against Python model, yielding near-zero difference (policy diff **1.21e-08**, value diff **4.40e-07**).
 - Achieved **81,439 states/second** synthetic MCTS search throughput (62% increase vs baseline) and **245.5 ms / turn** synchronously on GPU in a single process, completely eliminating multiprocessing and SHM.
 - Updated `alphatafl/docs/history/optimization_v1_phase5.md` and `alphatafl/docs/history/optimization_v1_benchmarks.md`. Pre-existing PyTorch scripts are also updated to support ONNX model evaluation.
+- Documented Phase 5F ONNX Runtime standalone C++ implementation details and updated recommendations status table in `alphatafl/docs/history/optimization_v1_phase5.md`.
+- Appended Section 13 detailing E2E game time, batch latency (4.91 ms), and synthetic MCTS throughput (81.4K states/sec) to `alphatafl/docs/history/optimization_v1_benchmarks.md`.
 
 ## [2026-05-28] Memory | Step 2 Sparse Priors Optimization
 - Stored prior probabilities sparsely parallel to `legal_action_indices`. Added binary search lookup helper `MCTSNode::get_child_prior()` for node creation.
@@ -18,6 +70,8 @@
 - E2E Turn Time reduced to **207 ms / turn** (41.4s total game time), yielding a **40% speedup** vs baseline.
 - Created `alphatafl/docs/history/optimization_v1_phase5.md` to document the entire Phase 5 optimization progress. Updated `alphatafl/docs/history/optimization_v1_benchmarks.md` with Section 12.
 - Updated `alphatafl/log.md` and `alphatafl/index.md`.
+- Documented Phase 5E Sparse Priors implementation details and marked P2 as Completed in the recommendations status table in `alphatafl/docs/history/optimization_v1_phase5.md`.
+- Appended Section 12 detailing the sparse memory metrics (1.078 KB / node) and the unexpected 22% C++ MCTS throughput speedup (61,072 states/sec) to `alphatafl/docs/history/optimization_v1_benchmarks.md`.
 
 ## [2026-05-28] Add | Step 1 C++ MCTS Callback Optimization
 - Reimplemented legal move masking, softmax normalization, and Dirichlet noise in C++ using zero-copy memory views.
@@ -27,6 +81,8 @@
 - Wrapped benchmarks in a `try...finally` block to guarantee subprocess/SHM cleanup on error or cancellation.
 - Updated `alphatafl/docs/history/optimization_v1_benchmarks.md`: Added Section 11 (Phase 5D Step 1 results), resolved python masking loop unknowns.
 - Updated `alphatafl/log.md` and `alphatafl/index.md`.
+- Documented Phase 5D C++ Callback implementation details and updated recommendations status table in `alphatafl/docs/history/optimization_v1_phase5.md`.
+- Appended Section 11 detailing 800-sim E2E timing results and resolved Python masking overhead unknowns to `alphatafl/docs/history/optimization_v1_benchmarks.md`.
 
 ## [2026-05-09] Add | Python Callback Micro-Profile
 - Instrumented `eval_fn_batched` in `benchmarks/time_single_game.py` with per-step `time.perf_counter()` timers. Collected 1755 batch samples across one 200-turn 800-sim game.
@@ -35,6 +91,13 @@
 - Updated `wiki/docs/history/optimization_v1_benchmarks.md`: Added Section 8.8 (Callback Micro-Profile) and 8.9 (Revised Bottleneck Summary with measured data). Replaced estimated bottleneck numbers with instrumented data throughout 8.9-8.11 and conclusion.
 - Answered open question #7. Added #8 (pybind11 game loop overhead profiling).
 - Updated `wiki/log.md` and `wiki/index.md`.
+
+## [2026-05-09] Benchmark | Compile all benchmarks into wiki
+- Created initial wiki structure and populated with complete benchmark compilation in `alphatafl/docs/history/optimization_v1_benchmarks.md` and `alphatafl/docs/history/optimization_v1_phase5.md`.
+- Key findings documented:
+  - Phase 5A: 0ms timeout gives 2.8x speedup (9.56s -> 3.44s/game).
+  - Phase 5B: C++ libtorch blocked on Windows (CUDA operators not registered).
+  - Phase 5C: torch.compile works but compilation time >5 minutes, not viable.
 
 ## [2026-05-09] Correct | Bottleneck Analysis After Deep-Tree Profile & Single-Game Timing
 - Ran C++ deep-tree profile (`ProfileTest.DeepTreeTraversal`): per-sim MCTS cost is flat at 22-24 µs regardless of 100/400/800 sims. Tree depth has no measurable effect — sparse `select_child` is O(legal moves), not O(tree depth). C++ is definitively NOT the bottleneck.

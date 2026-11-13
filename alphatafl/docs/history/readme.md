@@ -56,4 +56,5 @@ Complete rewrite of the hot-path performance architecture. No game rule or netwo
 - **torch.compile** — `mode="reduce-overhead"` on Inference Server model.
 - **DataLoader** — `ReplayDataset` + `DataLoader(batch_size=128)` for training.
 - **50 passing tests** across 16 test classes.
-- See [[optimization_v1_benchmarks]] for full quantitative results.
+  *(Note: this figure was reported at the v1 completion milestone. The current test count is 62 Python test methods across 5 files (typically 59 pass, 3 skip on Windows where MSVC is absent or the e2e cleanup helper hangs) plus 36 C++ tests across 3 suites (100% pass). The 16-class count corresponds to an earlier organization; the actual test files reorganized slightly during Phase 5.)*
+- See [v1 Benchmarks](./optimization_v1_benchmarks.md) for full quantitative results.
