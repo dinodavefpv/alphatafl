@@ -1,5 +1,13 @@
 # AlphaTafl Wiki Log
 
+## [2026-11-13] Fix | SHM handle leak; GIL handling measured
+
+- **SHM leak:** `self_play_game_batched` opened three `SharedMemory` handles per game and never closed them. Added `open_worker_shm()` / `close_worker_shm()` in `self_play.py`; handles are closed in a `finally` around the move loop, and a partial open failure closes what it opened. New `tests/python/test_shm_handles.py` (4 tests, incl. handles closed when search raises).
+- **GIL — proposal reversed after measurement:** releasing the GIL in `MCTS.search` was proposed to stop GUI stutter. A probe (background search, busy main thread) showed the main thread already never stalls > ~2 ms without the release, because each eval callback hands the GIL back; with the release, search slowed (single-leaf 300 sims: 729 → 4491 ms; batched 1000 sims: 295 → 598 ms) from per-callback re-acquisition. `search` therefore keeps the GIL, with a comment in `src/bindings/bind.cpp` explaining why.
+- **InferenceEngine:** `evaluate` / `evaluate_single` now release the GIL. Measured gain is small (max main-thread stall 54–102 ms → ~50 ms for 20× N=64 on CPU) because converting the result to nested Python lists needs the GIL; returning numpy arrays would fix that.
+- **Docs:** `docs/api/bindings.md` (GIL notes; `InferenceEngine` no longer described as being on the MCTS hot path — it is not wired into self-play; Dirichlet mixing location corrected to `MCTS::search`), `docs/training/self_play.md` (SHM handle lifecycle).
+- **Tests:** C++ 22 + 6 pass; Python 79 passed, 2 skipped.
+
 ## [2026-11-13] Fix | Tests no longer delete real versioned checkpoints
 
 - **Bug:** `tests/python/test_phase3.py::test_checkpoint_frequency` cleaned up with `glob("models/alphatafl_v*.pt")` + `os.remove`, deleting the user's real versioned checkpoints. It also wrote `alphatafl_v00001/2.pt` into `models/`, because `Trainer` hardcoded `models/` for versioned checkpoints regardless of `model_path`.

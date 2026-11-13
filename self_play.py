@@ -12,6 +12,39 @@ import json
 import datetime
 
 
+SHM_PREFIX = "alphatafl_shm"
+
+
+def open_worker_shm(worker_id):
+    """Open this worker slot's (input, policy, value) SHM regions.
+
+    Returns the three handles, or None if any region is unavailable; handles
+    opened before a failure are closed so nothing leaks.
+    """
+    from multiprocessing import shared_memory
+    opened = []
+    try:
+        for kind in ("input", "policy", "value"):
+            opened.append(shared_memory.SharedMemory(name=f"{SHM_PREFIX}_{kind}_{worker_id}"))
+        return tuple(opened)
+    except Exception as e:
+        print(f"[Worker {worker_id}] SHM init failed: {e}, falling back to queue")
+        close_worker_shm(opened)
+        return None
+
+
+def close_worker_shm(handles):
+    """Close (never unlink) SHM handles; the orchestrator owns the regions."""
+    for shm in handles:
+        if shm is None:
+            continue
+        try:
+            shm.close()
+        except Exception:
+            pass
+
+
+
 def self_play_game(model, num_simulations=100, verbose=True):
     """Single-leaf self-play (fallback / GUI / diagnostic path)."""
     state = engine.GameState()
@@ -126,16 +159,12 @@ def self_play_game_batched(worker_id, num_simulations, batch_size,
     _shm_value = None
     
     if _use_shm:
-        try:
-            from multiprocessing import shared_memory
-            SHM_PREFIX = "alphatafl_shm"
-            _shm_input = shared_memory.SharedMemory(name=f"{SHM_PREFIX}_input_{worker_id}")
-            _shm_policy = shared_memory.SharedMemory(name=f"{SHM_PREFIX}_policy_{worker_id}")
-            _shm_value = shared_memory.SharedMemory(name=f"{SHM_PREFIX}_value_{worker_id}")
-        except Exception as e:
-            print(f"[Worker {worker_id}] SHM init failed: {e}, falling back to queue")
+        handles = open_worker_shm(worker_id)
+        if handles is None:
             _use_shm = False
-    
+        else:
+            _shm_input, _shm_policy, _shm_value = handles
+
     def eval_fn_batched(states_vector):
         """Python callback passed to C++ batched MCTS."""
         if not states_vector:
@@ -225,35 +254,41 @@ def self_play_game_batched(worker_id, num_simulations, batch_size,
         dirichlet_epsilon=0.25
     )
     
-    while state.winner == engine.Player.NONE:
-        # Run C++ batched MCTS
-        probs_list = mcts.search(state, num_simulations, batch_size)
-        probs = np.array(probs_list, dtype=np.float64)
-        probs_sum = probs.sum()
-        if probs_sum > 0:
-            probs /= probs_sum
-        else:
-            probs = np.full(len(probs), 1.0 / len(probs))
+    try:
+        while state.winner == engine.Player.NONE:
+            # Run C++ batched MCTS
+            probs_list = mcts.search(state, num_simulations, batch_size)
+            probs = np.array(probs_list, dtype=np.float64)
+            probs_sum = probs.sum()
+            if probs_sum > 0:
+                probs /= probs_sum
+            else:
+                probs = np.full(len(probs), 1.0 / len(probs))
         
-        # Store state, probs on CPU for the replay buffer
-        game_history.append((state_to_tensor(state).to(cpu_device), probs, state.current_turn))
+            # Store state, probs on CPU for the replay buffer
+            game_history.append((state_to_tensor(state).to(cpu_device), probs, state.current_turn))
         
-        # Select action
-        if len(game_history) < 30:
-            action = np.random.choice(len(probs), p=probs)
-        else:
-            action = np.argmax(probs)
+            # Select action
+            if len(game_history) < 30:
+                action = np.random.choice(len(probs), p=probs)
+            else:
+                action = np.argmax(probs)
             
-        from_r, from_c, to_r, to_c = get_move_from_index(action)
-        moves_made.append({"from": [int(from_r), int(from_c)], "to": [int(to_r), int(to_c)]})
+            from_r, from_c, to_r, to_c = get_move_from_index(action)
+            moves_made.append({"from": [int(from_r), int(from_c)], "to": [int(to_r), int(to_c)]})
         
-        if verbose:
-            print(f"Turn {len(game_history)}: {state.current_turn.name} moves ({from_r}, {from_c}) -> ({to_r}, {to_c})")
-        state.apply_move(engine.Move(from_r, from_c, to_r, to_c))
+            if verbose:
+                print(f"Turn {len(game_history)}: {state.current_turn.name} moves ({from_r}, {from_c}) -> ({to_r}, {to_c})")
+            state.apply_move(engine.Move(from_r, from_c, to_r, to_c))
         
-        if len(game_history) > 200:
-            break
-    
+            if len(game_history) > 200:
+                break
+    finally:
+        # Each game opens its own SHM handles; close them so long-running
+        # workers do not accumulate one set of handles per game.
+        close_worker_shm((_shm_input, _shm_policy, _shm_value))
+        _shm_input = _shm_policy = _shm_value = None
+
     if verbose:
         print(f"Game finished! Winner: {state.winner.name}")
     

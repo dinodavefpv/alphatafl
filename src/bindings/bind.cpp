@@ -166,20 +166,25 @@ PYBIND11_MODULE(alphatafl_engine, m) {
             
             return std::make_unique<MCTS>(cpp_eval_fn, cpp_eval_fn_batched, c_puct, dirichlet_alpha, dirichlet_epsilon);
         }), py::arg("eval_fn"), py::arg("eval_fn_batched"), py::arg("c_puct") = 1.4, py::arg("dirichlet_alpha") = 0.3, py::arg("dirichlet_epsilon") = 0.0)
+        // search() deliberately keeps the GIL: every eval callback needs it, and
+        // releasing it here only adds a re-acquire per callback (measured slower,
+        // with no gain in responsiveness for other threads).
         .def("search", static_cast<std::vector<float> (MCTS::*)(const GameState&, int)>(&MCTS::search),
             py::arg("initial_state"), py::arg("num_simulations"))
         .def("search", static_cast<std::vector<float> (MCTS::*)(const GameState&, int, int)>(&MCTS::search),
             py::arg("initial_state"), py::arg("num_simulations"), py::arg("batch_size"));
 
-    // Phase 5B: Native C++ inference engine (eliminates Python mp.Queue)
+    // Phase 5B: Native C++ inference engine (eliminates Python mp.Queue).
+    // evaluate()/evaluate_single() never call back into Python, so they release
+    // the GIL for the whole ONNX Runtime call.
     py::class_<InferenceEngine>(m, "InferenceEngine")
         .def(py::init<const std::string&, const std::string&>(),
             py::arg("model_path"), py::arg("device") = "cuda")
         .def("evaluate", &InferenceEngine::evaluate,
-            py::arg("states"),
+            py::arg("states"), py::call_guard<py::gil_scoped_release>(),
             "Evaluate a batch of GameStates. Returns (policies, values).")
         .def("evaluate_single", &InferenceEngine::evaluate_single,
-            py::arg("state"),
+            py::arg("state"), py::call_guard<py::gil_scoped_release>(),
             "Evaluate a single GameState. Returns (policy, value).");
 }
 

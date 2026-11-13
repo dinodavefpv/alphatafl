@@ -17,6 +17,8 @@ Used when `ALPHATAFL_BATCHED=1`. Function: `self_play_game_batched()`.
 4. **Worker** forwards the raw softmaxed policies and values back to the C++ MCTS as-is. Legal-move masking, softmax renormalization, and the root-only Dirichlet mixing all happen **inside the C++ `MCTSNode::expand` callback** (Phase 5D; see `docs/api/interface_contract.md` §7). The Dirichlet ε/α are passed to the C++ `MCTS` constructor at `self_play_game_batched` startup.
 5. Completed game data pushed to `replay_queue` (no disk I/O on hot path).
 
+**SHM handles (`ALPHATAFL_SHM=1`):** each game opens its worker slot's `input`/`policy`/`value` regions with `open_worker_shm(worker_id)` and closes them with `close_worker_shm()` in a `finally` around the move loop (`self_play.py`), so handles never accumulate across games, even when search raises. If any region is missing, the already-opened ones are closed and the game falls back to the queue transport. Workers only close; the orchestrator owns and unlinks the regions.
+
 ### Legacy Single-Leaf Path (fallback)
 Used when `ALPHATAFL_BATCHED=0` or by GUI. Function: `self_play_game()`.
 

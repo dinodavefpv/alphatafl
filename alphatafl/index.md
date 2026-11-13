@@ -33,6 +33,7 @@
 - [test_profile.cpp](../tests/cpp/test_profile.cpp): C++ profiling tests (`NodeMemoryFootprint` and `MctsMemoryGrowth`).
 
 ## Recent Updates
+- **2026-11-13**: Fixed per-game SHM handle leak in batched self-play; `InferenceEngine.evaluate` releases the GIL, `MCTS.search` intentionally keeps it (measured). Updated [Python Bindings](./docs/api/bindings.md), [Self-Play](./docs/training/self_play.md).
 - **2026-11-13**: Test suite no longer deletes real `models/alphatafl_v*.pt`; versioned checkpoints now live next to `model_path` (`Trainer.checkpoint_dir`). Updated [Training Loop](./docs/training/training_loop.md).
 - **2026-11-12**: Checkpoint safety — atomic, ordered checkpoint writes (`src/training/checkpoint.py`), unloadable `current_best.pt` backed up instead of overwritten, hot-reload fixed under `torch.compile`. Updated [Training Loop](./docs/training/training_loop.md), [Inference Server](./docs/training/inference_server.md), [Architecture](./docs/architecture/README.md).
 - **2026-11-12**: Fixed history ring-buffer corruption on multi-ply undo (`UndoInfo.overwritten_history`); MCTS leaves now see correct T-1..T-3 history planes. Updated [Game State](./docs/engine/game_state.md); added regression test `UndoMultiPlyRestoresHistory`.

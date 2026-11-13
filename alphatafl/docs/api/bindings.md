@@ -40,10 +40,12 @@ The C++ engine is exposed to Python as the `alphatafl_engine` module using Pybin
 - `search(initial_state, num_simulations)`: Single-leaf MCTS. Returns `list[float]` length 4840.
 - `search(initial_state, num_simulations, batch_size)`: Batched MCTS. Returns `list[float]` length 4840. Falls back to single-leaf if `batch_size <= 0` or no batched callback.
 
-`dirichlet_alpha` and `dirichlet_epsilon` control the root-only Dirichlet noise that is mixed into the prior on the first expansion (standard AlphaZero: `policy = (1 - ε) * policy + ε * Dirichlet(α)`). They are surfaced in the Pybind11 constructor so the C++ MCTS can synthesize Dirichlet noise inside `MCTSNode::expand` without crossing the boundary on the root.
+**GIL:** `search` holds the GIL (`src/bindings/bind.cpp:169-175`). Every eval callback must hold it anyway, and the C++ work between callbacks is microseconds, so other Python threads (e.g. the GUI loop) still get the GIL at each callback (measured max main-thread stall < 2 ms). Releasing it was measured to slow search down because each callback then has to re-acquire it.
+
+`dirichlet_alpha` and `dirichlet_epsilon` control the root-only Dirichlet noise that is mixed into the prior on the first expansion (standard AlphaZero: `policy = (1 - ε) * policy + ε * Dirichlet(α)`). They are surfaced in the Pybind11 constructor so the C++ MCTS can mix Dirichlet noise into the root priors right after the root expansion in `MCTS::search` (`src/engine/mcts.cpp:101-120`, `:210-229`), without crossing the boundary.
 
 ### `InferenceEngine` (Phase 5F)
-A standalone C++ class that loads an ONNX-exported model and runs inference with the ONNX Runtime CUDA Execution Provider (with CPU fallback). Eliminates the Python Inference Server, mp.Queue, and SHM transport on the C++ MCTS hot path.
+A standalone C++ class that loads an ONNX-exported model and runs inference with the ONNX Runtime CUDA Execution Provider (with CPU fallback). It is not used by the self-play pipeline (`self_play_game_batched` evaluates through the Python Inference Server); it is exercised by benchmarks and debug scripts.
 
 **Constructor:**
 - `InferenceEngine(model_path, device="cuda")`: `model_path` is the path to an `.onnx` model exported via `scripts/export_onnx.py`. `device` selects the ORT execution provider; `"cpu"` forces CPU execution.
@@ -51,6 +53,8 @@ A standalone C++ class that loads an ONNX-exported model and runs inference with
 **Methods:**
 - `evaluate(states)`: Batch inference. Returns `(policies, values)` where `policies` is shape `(N, 4840)` (list of lists of float) and `values` is shape `(N,)`.
 - `evaluate_single(state)`: Single-state inference. Returns `(policy [4840], value)`.
+
+**GIL:** both methods release the GIL for the C++ call (`py::call_guard<py::gil_scoped_release>`). Converting the returned `vector<vector<float>>` into nested Python lists still needs the GIL and dominates the stall (≈50 ms for N=64 on CPU).
 
 Used as the `eval_fn` of an `MCTS` instance when running the C++ MCTS in self-contained mode (no inference server process). See `docs/api/interface_contract.md` §6 and `docs/history/optimization_v1_phase5.md` §5F.
 
